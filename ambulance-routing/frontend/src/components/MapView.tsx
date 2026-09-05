@@ -65,10 +65,11 @@ function MapClickHandler({ onMapClick }: MapClickHandlerProps) {
 interface FitToRouteProps {
   route: RouteResponse | null;
   ambulancePos: LatLng;
+  routeLatLngs: LatLngExpression[];
 }
 
-/** Re-centers the map on the ambulance + selected hospital whenever a new route arrives. */
-function FitToRoute({ route, ambulancePos }: FitToRouteProps) {
+/** Re-centers the map on the ambulance + selected hospital + route polyline whenever a new route arrives. */
+function FitToRoute({ route, ambulancePos, routeLatLngs }: FitToRouteProps) {
   const map = useMapEvents({});
   const lastRouteRef = useRef<RouteResponse | null>(null);
 
@@ -76,12 +77,14 @@ function FitToRoute({ route, ambulancePos }: FitToRouteProps) {
     if (!route || route === lastRouteRef.current) return;
     lastRouteRef.current = route;
 
-    const bounds: LatLngBoundsExpression = [
+    const points: LatLngExpression[] = [
       [ambulancePos.lat, ambulancePos.lng],
       [route.hospital.latitude, route.hospital.longitude],
+      ...routeLatLngs,
     ];
+    const bounds = L.latLngBounds(points);
     map.fitBounds(bounds, { padding: [80, 80], maxZoom: 15 });
-  }, [route, ambulancePos, map]);
+  }, [route, ambulancePos, routeLatLngs, map]);
 
   return null;
 }
@@ -125,7 +128,7 @@ export function MapView({
       />
 
       <MapClickHandler onMapClick={onMapClick} />
-      <FitToRoute route={route} ambulancePos={ambulancePos} />
+      <FitToRoute route={route} ambulancePos={ambulancePos} routeLatLngs={routeLatLngs} />
 
       {/* Clustered so the browser never renders ~930 raw markers at once. */}
       <MarkerClusterGroup chunkedLoading maxClusterRadius={60} spiderfyOnMaxZoom>
@@ -157,6 +160,7 @@ export function MapView({
 
       {routeLatLngs.length > 1 && (
         <Polyline
+          key={`${route?.hospital.id ?? "route"}-${routeLatLngs.length}-${route?.estimated_travel_time_seconds ?? 0}`}
           positions={routeLatLngs}
           pathOptions={{ color: "#35D48C", weight: 5, opacity: 0.9 }}
         />

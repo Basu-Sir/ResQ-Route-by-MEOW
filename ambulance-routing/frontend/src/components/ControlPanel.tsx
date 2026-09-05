@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { LatLng } from "../types";
 
 interface ControlPanelProps {
@@ -26,6 +26,11 @@ export function ControlPanel({
 }: ControlPanelProps) {
   const [latInput, setLatInput] = useState(ambulancePos.lat.toFixed(6));
   const [lngInput, setLngInput] = useState(ambulancePos.lng.toFixed(6));
+
+  useEffect(() => {
+    setLatInput(ambulancePos.lat.toFixed(6));
+    setLngInput(ambulancePos.lng.toFixed(6));
+  }, [ambulancePos]);
 
   function applyCoords() {
     const lat = parseFloat(latInput);
