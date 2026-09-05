@@ -15,6 +15,7 @@ const DEFAULT_PATIENT_POS: LatLng = DEFAULT_AMBULANCE_POS;
 export default function App() {
   const [ambulancePos, setAmbulancePos] = useState<LatLng>(DEFAULT_AMBULANCE_POS);
   const [patientPos, setPatientPos] = useState<LatLng>(DEFAULT_PATIENT_POS);
+  const [patientActive, setPatientActive] = useState(false);
   const [alphaEmergency, setAlphaEmergency] = useState(1.5);
   const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(null);
   const [lastEmergency, setLastEmergency] = useState<EmergencyResponse | null>(null);
@@ -44,8 +45,28 @@ export default function App() {
     const current = fleetAmbulances.find(
       (a) => a.ambulance_id === lastEmergency.ambulance.ambulance_id
     );
-    if (current && (current.status !== lastEmergency.ambulance.status || current.has_patient !== lastEmergency.ambulance.has_patient)) {
-      setLastEmergency((prev) => (prev ? { ...prev, ambulance: current } : null));
+    if (current) {
+      if (lastEmergency.ambulance.has_patient && !current.has_patient) {
+        setPatientActive(false);
+      }
+      if (
+        current.latitude !== lastEmergency.ambulance.latitude ||
+        current.longitude !== lastEmergency.ambulance.longitude ||
+        current.status !== lastEmergency.ambulance.status ||
+        current.has_patient !== lastEmergency.ambulance.has_patient ||
+        current.eta_seconds !== lastEmergency.ambulance.eta_seconds ||
+        current.destination?.hospital_id !== lastEmergency.ambulance.destination?.hospital_id
+      ) {
+        setLastEmergency((prev) =>
+          prev
+            ? {
+                ...prev,
+                ambulance: current,
+                travel_time_seconds: current.eta_seconds ?? prev.travel_time_seconds,
+              }
+            : null
+        );
+      }
     }
   }, [fleetAmbulances, lastEmergency]);
 
@@ -59,6 +80,7 @@ export default function App() {
         alpha_emergency: alphaEmergency,
       });
       setLastEmergency(resp);
+      setPatientActive(true);
       // Immediately refresh fleet so marker reflects dispatched status right away
       refreshAmbulances();
     } catch (err: unknown) {
@@ -83,6 +105,7 @@ export default function App() {
 
   function handleMapClick(pos: LatLng) {
     setPatientPos(pos);
+    setPatientActive(true);
     setAmbulancePos(pos);
   }
 
@@ -119,7 +142,16 @@ export default function App() {
           {hospitalsLoading && <div className="map-loading-overlay">Loading hospitals…</div>}
           <MapView
             ambulancePos={ambulancePos}
-            patientLocation={lastEmergency ? { lat: lastEmergency.patient_latitude, lng: lastEmergency.patient_longitude } : patientPos}
+            patientLocation={
+              patientActive
+                ? lastEmergency?.ambulance.has_patient
+                  ? {
+                      lat: lastEmergency.ambulance.latitude,
+                      lng: lastEmergency.ambulance.longitude,
+                    }
+                  : patientPos
+                : null
+            }
             onMapClick={handleMapClick}
             hospitals={hospitals}
             selectedHospitalId={selectedHospitalId}

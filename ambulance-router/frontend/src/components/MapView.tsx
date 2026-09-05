@@ -222,9 +222,9 @@ export function MapView({
             positions={pts}
             pathOptions={{
               color,
-              weight: isDispatched ? 4 : 3,
-              opacity: isDispatched ? 0.9 : 0.6,
-              dashArray: isDispatched ? undefined : "5, 6",
+              weight: (isDispatched || isWithPatient) ? 4 : 3,
+              opacity: (isDispatched || isWithPatient) ? 0.9 : 0.6,
+              dashArray: (isDispatched || isWithPatient) ? undefined : "5, 6",
             }}
           />
         );
@@ -273,14 +273,17 @@ export function MapView({
               </div>
               <div style={{ fontSize: "12px", lineHeight: "1.6" }}>
                 <div>
-                  <strong>Patient on Board:</strong> {amb.has_patient ? "Yes (🚨 En Route)" : "None"}
+                  <strong>Patient onboard:</strong>{" "}
+                  <span style={{ color: amb.has_patient ? "#FF4D5E" : "#35D48C", fontWeight: "bold" }}>
+                    {amb.has_patient ? "Yes" : "No"}
+                  </span>
                 </div>
                 <div>
                   <strong>Fleet Mode:</strong> {amb.is_roaming ? "Roaming Patrol ⚡" : "Standby Base 🅿️"}
                 </div>
                 {amb.destination && (
                   <div>
-                    <strong>Heading To:</strong> {amb.destination.hospital_name}
+                    <strong>Destination:</strong> {amb.destination.hospital_name}
                   </div>
                 )}
                 {amb.eta_seconds !== null && amb.eta_seconds > 0 && (
