@@ -161,19 +161,24 @@ export function ControlPanel({
               padding: "14px",
               background: "rgba(38, 49, 64, 0.5)",
               borderRadius: "6px",
-              border: "1px solid #35D48C",
+              border: `1px solid ${lastEmergency.ambulance.has_patient ? "#FF4D5E" : "#35D48C"}`,
             }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-              <strong style={{ fontSize: "14px", color: "#35D48C" }}>
-                🚑 {lastEmergency.ambulance.ambulance_id} Assigned
+              <strong style={{ fontSize: "14px", color: lastEmergency.ambulance.has_patient ? "#FF4D5E" : "#35D48C" }}>
+                🚑 {lastEmergency.ambulance.ambulance_id} {lastEmergency.ambulance.has_patient ? "Transporting" : "Assigned"}
               </strong>
               <span
                 style={{
                   fontSize: "11px",
                   padding: "2px 6px",
                   borderRadius: "4px",
-                  background: "#FFAA00",
+                  background:
+                    lastEmergency.ambulance.status === "BUSY"
+                      ? "#FF4D5E"
+                      : lastEmergency.ambulance.status === "DISPATCHED"
+                      ? "#FFAA00"
+                      : "#35D48C",
                   color: "#0A0E14",
                   fontWeight: "bold",
                 }}
@@ -186,14 +191,15 @@ export function ControlPanel({
               <div>
                 <span style={{ color: "#8895A3" }}>ETA:</span>{" "}
                 <strong style={{ color: "#FFF" }}>
-                  {Math.round(lastEmergency.travel_time_seconds)}s (
-                  {Math.ceil(lastEmergency.travel_time_seconds / 60)} min)
+                  {lastEmergency.ambulance.eta_seconds !== null && lastEmergency.ambulance.eta_seconds !== undefined && lastEmergency.ambulance.eta_seconds > 0
+                    ? `${Math.round(lastEmergency.ambulance.eta_seconds)}s (${Math.ceil(lastEmergency.ambulance.eta_seconds / 60)} min)`
+                    : `${Math.round(lastEmergency.travel_time_seconds)}s`}
                 </strong>
               </div>
               <div>
-                <span style={{ color: "#8895A3" }}>Distance:</span>{" "}
+                <span style={{ color: "#8895A3" }}>Destination:</span>{" "}
                 <strong style={{ color: "#FFF" }}>
-                  {(lastEmergency.distance_meters / 1000).toFixed(2)} km
+                  {lastEmergency.ambulance.destination ? lastEmergency.ambulance.destination.hospital_name : "None"}
                 </strong>
               </div>
               <div>
@@ -203,9 +209,9 @@ export function ControlPanel({
                 </span>
               </div>
               <div>
-                <span style={{ color: "#8895A3" }}>Patient Status:</span>{" "}
-                <span style={{ color: lastEmergency.ambulance.has_patient ? "#FF4D5E" : "#35D48C" }}>
-                  {lastEmergency.ambulance.has_patient ? "🚨 Picked Up" : "En Route"}
+                <span style={{ color: "#8895A3" }}>Patient onboard:</span>{" "}
+                <span style={{ color: lastEmergency.ambulance.has_patient ? "#FF4D5E" : "#35D48C", fontWeight: "bold" }}>
+                  {lastEmergency.ambulance.has_patient ? "Yes" : "No"}
                 </span>
               </div>
             </div>

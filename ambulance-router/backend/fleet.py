@@ -71,6 +71,7 @@ class Ambulance:
     status: str  # "AVAILABLE", "BUSY", "DISPATCHED"
     has_patient: bool
     is_roaming: bool = False
+    original_roaming: bool = False
     target_type: Optional[str] = None  # "ROAMING", "PATIENT", "HOSPITAL"
     destination: Optional[AmbulanceDestination] = None
     eta_seconds: Optional[float] = None
@@ -232,6 +233,7 @@ class AmbulanceFleet:
                     status="AVAILABLE",
                     has_patient=False,
                     is_roaming=is_roaming,
+                    original_roaming=is_roaming,
                     target_type="ROAMING" if is_roaming else None,
                     current_node_id=node_id,
                     speed_mps=12.0,
@@ -368,6 +370,83 @@ class AmbulanceFleet:
             amb.eta_seconds = total_dist / max(amb.speed_mps, 0.5)
             amb.target_type = "ROAMING"
 
+    def _route_to_nearest_hospital(self, amb: Ambulance) -> None:
+        """
+        Route ambulance from patient location to the nearest suitable hospital
+        using existing static SUMO/rustworkx routing (no traffic, static speeds).
+        """
+        source_node = nearest_node_from_latlon(self.gd, amb.latitude, amb.longitude)
+        amb.current_node_id = source_node
+
+        available_hospitals = filter_available(self.hospitals)
+        if not available_hospitals and self.hospitals:
+            available_hospitals = self.hospitals
+
+        routed = False
+        if available_hospitals and source_node in self.gd.node_index:
+            try:
+                # Use existing normal/static routing speeds (redis_speeds={}, alpha_emergency=1.0)
+                result = find_route_to_nearest_hospital(
+                    self.gd,
+                    source_node,
+                    available_hospitals,
+                    redis_speeds={},
+                    alpha_emergency=1.0,
+                )
+                geometry = edge_ids_to_lonlat_geometry(self.gd, result.edge_ids)
+                if not geometry or len(geometry) < 2:
+                    geometry = [
+                        [round(amb.longitude, 6), round(amb.latitude, 6)],
+                        [round(result.hospital.longitude, 6), round(result.hospital.latitude, 6)],
+                    ]
+
+                cum_dists, total_dist = self._build_cumulative_distances(
+                    geometry, target_total_meters=result.distance_meters
+                )
+
+                amb.has_patient = True
+                amb.status = "BUSY"
+                amb.is_roaming = False
+                amb.target_type = "HOSPITAL"
+                amb.destination = AmbulanceDestination(
+                    hospital_id=result.hospital.id,
+                    hospital_name=result.hospital.name,
+                    latitude=result.hospital.latitude,
+                    longitude=result.hospital.longitude,
+                )
+                amb.route_edge_ids = result.edge_ids
+                amb.full_route_geometry = geometry
+                amb.route_geometry = geometry
+                amb.cumulative_distances = cum_dists
+                amb.total_distance_m = total_dist
+                amb.current_distance_m = 0.0
+                amb.eta_seconds = total_dist / max(amb.speed_mps, 0.5)
+                routed = True
+                logger.info(
+                    "Ambulance %s picked up patient, routed to nearest hospital %s (%s). Dist: %.1fm, ETA: %.1fs",
+                    amb.ambulance_id, result.hospital.id, result.hospital.name, total_dist, amb.eta_seconds,
+                )
+            except Exception as exc:
+                logger.warning("Routing to hospital failed for %s: %s", amb.ambulance_id, exc)
+
+        if not routed:
+            logger.error(
+                "Could not route ambulance %s from patient to a hospital; keeping it at the pickup point",
+                amb.ambulance_id,
+            )
+            amb.has_patient = True
+            amb.status = "BUSY"
+            amb.is_roaming = False
+            amb.target_type = "HOSPITAL"
+            amb.destination = None
+            amb.route_edge_ids = []
+            amb.full_route_geometry = []
+            amb.route_geometry = []
+            amb.cumulative_distances = []
+            amb.current_distance_m = 0.0
+            amb.total_distance_m = 0.0
+            amb.eta_seconds = None
+
     def step(self, dt: float) -> None:
         """
         Advance simulation forward by dt seconds.
@@ -391,10 +470,19 @@ class AmbulanceFleet:
 
                         # Check destination type
                         if amb.target_type == "PATIENT":
-                            # PATIENT PICKUP OCCURS!
-                            amb.has_patient = True
-                            amb.status = "BUSY"
-                            amb.is_roaming = False
+                            # 1. PATIENT PICKUP OCCURS!
+                            # Automatically set has_patient = True, status = "BUSY", immediately assign hospital destination
+                            self._route_to_nearest_hospital(amb)
+
+                        elif amb.target_type == "HOSPITAL":
+                            # 2. HOSPITAL ARRIVAL: Drop off patient
+                            logger.info(
+                                "Ambulance %s arrived at hospital %s! Patient dropped off.",
+                                amb.ambulance_id,
+                                amb.destination.hospital_name if amb.destination else "",
+                            )
+                            amb.has_patient = False
+                            amb.status = "AVAILABLE"
                             amb.target_type = None
                             amb.destination = None
                             amb.eta_seconds = None
@@ -404,7 +492,16 @@ class AmbulanceFleet:
                             amb.cumulative_distances = []
                             amb.current_distance_m = 0.0
                             amb.total_distance_m = 0.0
-                            logger.info("Ambulance %s arrived at patient! Patient onboard (has_patient=True).", amb.ambulance_id)
+                            amb.speed_mps = 12.0
+
+                            if amb.original_roaming:
+                                amb.is_roaming = True
+                                amb.current_node_id = nearest_node_from_latlon(self.gd, amb.latitude, amb.longitude)
+                                self._assign_roaming_route(amb)
+                                logger.info("Ambulance %s resumed roaming patrol.", amb.ambulance_id)
+                            else:
+                                amb.is_roaming = False
+                                logger.info("Ambulance %s remaining stationary at base.", amb.ambulance_id)
 
                         elif amb.is_roaming and amb.status == "AVAILABLE" and not amb.has_patient:
                             # Roaming ambulance arrived at its patrol destination -> auto-choose next route!
@@ -412,10 +509,9 @@ class AmbulanceFleet:
                             self._assign_roaming_route(amb)
 
                         else:
-                            # Regular arrival (e.g. hospital drop-off)
+                            # Regular arrival fallback
                             amb.status = "AVAILABLE"
                             amb.has_patient = False
-                            amb.is_roaming = False
                             amb.target_type = None
                             amb.destination = None
                             amb.eta_seconds = None
@@ -425,6 +521,12 @@ class AmbulanceFleet:
                             amb.cumulative_distances = []
                             amb.current_distance_m = 0.0
                             amb.total_distance_m = 0.0
+                            if amb.original_roaming:
+                                amb.is_roaming = True
+                                amb.current_node_id = nearest_node_from_latlon(self.gd, amb.latitude, amb.longitude)
+                                self._assign_roaming_route(amb)
+                            else:
+                                amb.is_roaming = False
                     else:
                         # Advance position along polyline
                         amb.current_distance_m = new_dist

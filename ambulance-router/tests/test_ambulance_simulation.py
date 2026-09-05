@@ -165,6 +165,54 @@ def test_emergency_request_and_patient_pickup(mock_fleet):
     assert fleet_amb.has_patient is True
 
 
+def test_patient_transport_dropoff_resumes_normal_fleet_behavior(graph_data):
+    hospital = Hospital(
+        id="H4",
+        name="Hospital 4",
+        latitude=5.0,
+        longitude=10.0,
+        sumo_node_id="H",
+        icu_beds=4,
+    )
+    fleet = AmbulanceFleet(gd=graph_data, hospitals=[hospital])
+    amb = fleet.ambulances["AMB-01"]
+    amb.latitude = 0.0
+    amb.longitude = 0.0
+    amb.current_node_id = "A"
+    amb.is_roaming = True
+    amb.original_roaming = True
+    amb.status = "DISPATCHED"
+    amb.target_type = "PATIENT"
+    amb.full_route_geometry = [[0.0, 0.0]]
+    amb.route_geometry = [[0.0, 0.0]]
+    amb.cumulative_distances = [0.0]
+    amb.total_distance_m = 0.0
+    amb.current_distance_m = 0.0
+
+    # Pickup immediately routes the same ambulance to the hospital.
+    fleet.step(1.0)
+    assert amb.status == "BUSY"
+    assert amb.has_patient is True
+    assert amb.target_type == "HOSPITAL"
+    assert amb.destination is not None
+    assert amb.destination.hospital_id == "H4"
+    assert amb.total_distance_m > 0
+
+    position_before_transport = (amb.latitude, amb.longitude)
+    fleet.step(0.2)
+    assert (amb.latitude, amb.longitude) != position_before_transport
+
+    # Arrival drops the patient and assigns a fresh roaming route.
+    fleet.step(100.0)
+    assert amb.status == "AVAILABLE"
+    assert amb.has_patient is False
+    assert amb.target_type == "ROAMING"
+    assert amb.is_roaming is True
+    assert amb.destination is not None
+    assert amb.destination.hospital_id != "H4"
+    assert amb.total_distance_m > 0
+
+
 def test_fleet_summary(mock_fleet):
     summary = mock_fleet.get_summary()
     assert summary.total == 30
