@@ -30,13 +30,22 @@ from backend.models import (
     RouteRequest,
     RouteResponse,
     SimulationStepRequest,
+    CongestedSegment,
+    TrafficCongestionResponse,
 )
 from backend.routing import (
     NoAvailableHospitalError,
     NoRouteFoundError,
     find_route_to_nearest_hospital,
 )
+from backend.traffic_service import (
+    get_congested_segments,
+    seed_traffic_in_redis,
+    start_traffic_simulation,
+    stop_traffic_simulation,
+)
 from fallback.create_fallback import read_fallback_speeds
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("main")
@@ -62,20 +71,28 @@ def startup_event() -> None:
     app.state.hospitals = load_hospitals(config.HOSPITALS_FILE)
     logger.info("Loaded %d hospitals", len(app.state.hospitals))
 
-    logger.info("Initializing ambulance fleet (30 simulated ambulances)...")
+    logger.info("Initializing ambulance fleet (60 simulated ambulances)...")
     app.state.fleet = AmbulanceFleet(
         gd=app.state.graph_data,
         hospitals=app.state.hospitals,
         traffic_speeds_fn=get_traffic_speeds,
+        num_ambulances=60,
+        num_roaming=20,
     )
     app.state.fleet.start_background_simulation(interval=1.0)
     logger.info("Ambulance fleet initialized: %d ambulances", len(app.state.fleet.ambulances))
 
+    logger.info("Seeding live traffic congestion into Redis...")
+    seed_traffic_in_redis(app.state.graph_data)
+    start_traffic_simulation(app.state.graph_data)
+
 
 @app.on_event("shutdown")
 def shutdown_event() -> None:
+    stop_traffic_simulation()
     if hasattr(app.state, "fleet") and app.state.fleet:
         app.state.fleet.stop_background_simulation()
+
 
 
 def get_traffic_speeds():
@@ -278,3 +295,29 @@ def request_emergency_ambulance(req: EmergencyRequest):
     except Exception as exc:
         logger.exception("Failed to dispatch emergency ambulance: %s", exc)
         raise HTTPException(status_code=500, detail=f"Emergency dispatch failed: {exc}")
+
+
+@app.get("/traffic/congestion", response_model=TrafficCongestionResponse)
+def get_traffic_congestion_endpoint(limit: int = 400):
+    """
+    Returns active traffic congestion road segments (RED: heavy, YELLOW: moderate)
+    read directly from Redis (`traffic:speeds`) with polyline geometries for map rendering.
+    """
+    gd: GraphData = app.state.graph_data
+    if gd is None:
+        raise HTTPException(status_code=503, detail="Routing graph is not loaded yet")
+    return get_congested_segments(gd, max_segments=limit)
+
+
+@app.post("/traffic/seed", response_model=TrafficCongestionResponse)
+def seed_traffic_endpoint(limit: int = 400):
+    """
+    Manually triggers re-seeding of realistic traffic congestion corridors
+    into Redis (`traffic:speeds`).
+    """
+    gd: GraphData = app.state.graph_data
+    if gd is None:
+        raise HTTPException(status_code=503, detail="Routing graph is not loaded yet")
+    seed_traffic_in_redis(gd, force=True)
+    return get_congested_segments(gd, max_segments=limit)
+

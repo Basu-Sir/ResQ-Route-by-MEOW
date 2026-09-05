@@ -6,6 +6,7 @@ import { StatusBar } from "./components/StatusBar";
 import { useHospitals } from "./hooks/useHospitals";
 import { useAmbulances } from "./hooks/useAmbulances";
 import { useRoute } from "./hooks/useRoute";
+import { useTrafficCongestion } from "./hooks/useTrafficCongestion";
 import { fetchHealth, requestEmergencyAmbulance } from "./api/client";
 import type { EmergencyResponse, HealthResponse, HospitalListItem, LatLng } from "./types";
 
@@ -25,6 +26,8 @@ export default function App() {
   const { hospitals, loading: hospitalsLoading } = useHospitals();
   const { ambulances: fleetAmbulances, summary, refresh: refreshAmbulances } = useAmbulances();
   const { route, loading: routeLoading, error, dispatch } = useRoute();
+  const { congestion, loading: trafficLoading, reseed: reseedTraffic } = useTrafficCongestion();
+
 
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -46,7 +49,7 @@ export default function App() {
       (a) => a.ambulance_id === lastEmergency.ambulance.ambulance_id
     );
     if (current) {
-      if (lastEmergency.ambulance.has_patient && !current.has_patient) {
+      if (current.patient_delivered || (lastEmergency.ambulance.has_patient && !current.has_patient)) {
         setPatientActive(false);
       }
       if (
@@ -54,8 +57,13 @@ export default function App() {
         current.longitude !== lastEmergency.ambulance.longitude ||
         current.status !== lastEmergency.ambulance.status ||
         current.has_patient !== lastEmergency.ambulance.has_patient ||
+        current.patient_delivered !== lastEmergency.ambulance.patient_delivered ||
+        current.delivered_hospital_name !== lastEmergency.ambulance.delivered_hospital_name ||
         current.eta_seconds !== lastEmergency.ambulance.eta_seconds ||
-        current.destination?.hospital_id !== lastEmergency.ambulance.destination?.hospital_id
+        current.remaining_distance_meters !== lastEmergency.ambulance.remaining_distance_meters ||
+        current.destination?.hospital_id !== lastEmergency.ambulance.destination?.hospital_id ||
+        current.traffic_source !== lastEmergency.ambulance.traffic_source ||
+        current.traffic_condition !== lastEmergency.ambulance.traffic_condition
       ) {
         setLastEmergency((prev) =>
           prev
@@ -63,6 +71,7 @@ export default function App() {
                 ...prev,
                 ambulance: current,
                 travel_time_seconds: current.eta_seconds ?? prev.travel_time_seconds,
+                distance_meters: current.remaining_distance_meters ?? prev.distance_meters,
               }
             : null
         );
@@ -117,6 +126,7 @@ export default function App() {
         hospitalCount={hospitals.length}
         fleetSummary={summary}
         fleetCount={fleetAmbulances.length}
+        congestionData={congestion}
       />
 
       <div className="app-body">
@@ -132,6 +142,10 @@ export default function App() {
             requestLoading={emergencyLoading}
             lastEmergency={lastEmergency}
             emergencyError={emergencyError}
+            onClearEmergency={() => {
+              setLastEmergency(null);
+              setPatientActive(false);
+            }}
             onDispatch={handleDispatchRoute}
             loading={routeLoading}
           />
@@ -143,7 +157,7 @@ export default function App() {
           <MapView
             ambulancePos={ambulancePos}
             patientLocation={
-              patientActive
+              patientActive && !lastEmergency?.ambulance.patient_delivered
                 ? lastEmergency?.ambulance.has_patient
                   ? {
                       lat: lastEmergency.ambulance.latitude,
@@ -158,9 +172,13 @@ export default function App() {
             route={route}
             onHospitalClick={handleHospitalClick}
             fleetAmbulances={fleetAmbulances}
+            congestionData={congestion}
+            onReseedTraffic={reseedTraffic}
+            isTrafficLoading={trafficLoading}
           />
         </main>
       </div>
     </div>
+
   );
 }

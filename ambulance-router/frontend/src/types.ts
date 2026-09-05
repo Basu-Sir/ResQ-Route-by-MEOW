@@ -72,8 +72,14 @@ export interface AmbulanceState {
   is_roaming?: boolean;
   destination: AmbulanceDestination | null;
   eta_seconds: number | null;
+  remaining_distance_meters?: number | null;
   route_geometry: RouteGeometry;
+  traffic_source?: string | null;
+  traffic_condition?: string | null;
+  patient_delivered?: boolean;
+  delivered_hospital_name?: string | null;
 }
+
 
 export interface AmbulanceDispatchRequest {
   hospital_id?: string;
@@ -103,3 +109,21 @@ export interface FleetSummary {
   dispatched: number;
   with_patient: number;
 }
+
+export interface CongestedSegment {
+  edge_id: string;
+  level: "HEAVY" | "MODERATE";
+  speed_kmh: number;
+  normal_speed_kmh: number;
+  congestion_ratio: number;
+  geometry: [number, number][]; // [lon, lat][]
+}
+
+export interface TrafficCongestionResponse {
+  total_congested_segments: number;
+  heavy_count: number;
+  moderate_count: number;
+  source: string;
+  segments: CongestedSegment[];
+}
+

@@ -8,6 +8,7 @@ is used to reach every candidate hospital in one pass, instead of running
 Dijkstra once per hospital.
 """
 import logging
+import math
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Tuple
 
@@ -38,7 +39,13 @@ class RouteResult:
 
 
 def compute_effective_speed(live_speed: float) -> float:
-    return max(live_speed, MIN_EFFECTIVE_SPEED)
+    try:
+        val = float(live_speed)
+        if math.isnan(val) or math.isinf(val) or val <= 0:
+            return MIN_EFFECTIVE_SPEED
+        return max(val, MIN_EFFECTIVE_SPEED)
+    except (TypeError, ValueError):
+        return MIN_EFFECTIVE_SPEED
 
 
 def compute_edge_weight(length: float, speed: float, alpha_emergency: float) -> float:
@@ -48,9 +55,16 @@ def compute_edge_weight(length: float, speed: float, alpha_emergency: float) -> 
 
 
 def resolve_edge_speed(edge_id: str, static_speed: float, redis_speeds: Dict[str, float]) -> float:
-    """Live speed from Redis if present, otherwise the edge's static SUMO speed."""
-    if edge_id in redis_speeds:
-        return redis_speeds[edge_id]
+    """Live speed from Redis if present and valid, otherwise the edge's static SUMO speed."""
+    if edge_id in redis_speeds and redis_speeds[edge_id] is not None:
+        try:
+            val = float(redis_speeds[edge_id])
+            if not (math.isnan(val) or math.isinf(val)):
+                if val <= 0:
+                    return MIN_EFFECTIVE_SPEED
+                return val
+        except (TypeError, ValueError):
+            pass
     return static_speed
 
 
