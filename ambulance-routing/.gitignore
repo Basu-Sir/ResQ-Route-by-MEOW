@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+fallback/fallback_traffic.json
+data/city.net.xml
+*.log
+.vscode/
+.idea/

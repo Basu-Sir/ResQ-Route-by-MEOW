@@ -1,0 +1,15 @@
+<configuration>
+    <input>
+        <net-file value="../data/city.net.xml"/>
+        <route-files value="routes.rou.xml"/>
+    </input>
+
+    <time>
+        <begin value="0"/>
+        <end value="120"/>
+    </time>
+
+    <processing>
+        <time-to-teleport value="-1"/>
+    </processing>
+</configuration>

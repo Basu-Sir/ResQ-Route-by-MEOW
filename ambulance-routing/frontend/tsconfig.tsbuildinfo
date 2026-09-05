@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/types.ts","./src/api/client.ts","./src/components/ControlPanel.tsx","./src/components/HospitalInfoPanel.tsx","./src/components/MapView.tsx","./src/components/StatusBar.tsx","./src/hooks/useHospitals.ts","./src/hooks/useRoute.ts"],"version":"5.9.3"}
