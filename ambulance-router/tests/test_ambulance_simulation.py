@@ -6,6 +6,7 @@ from backend.fleet import (
     haversine_meters,
 )
 from backend.hospitals import Hospital
+from backend.models import AmbulanceDestination
 
 
 @pytest.fixture
@@ -29,9 +30,9 @@ def test_haversine_meters_basic():
     assert 1000 < d < 1200
 
 
-def test_fleet_initialization_creates_30_ambulances(mock_fleet):
-    assert len(mock_fleet.ambulances) == 30
-    for i in range(1, 31):
+def test_fleet_initialization_creates_60_ambulances(mock_fleet):
+    assert len(mock_fleet.ambulances) == 60
+    for i in range(1, 61):
         amb_id = f"AMB-{i:02d}"
         assert amb_id in mock_fleet.ambulances
         amb = mock_fleet.ambulances[amb_id]
@@ -45,10 +46,10 @@ def test_fleet_initial_state_breakdown(mock_fleet):
     roaming = [a for a in mock_fleet.ambulances.values() if a.is_roaming]
     standby = [a for a in mock_fleet.ambulances.values() if not a.is_roaming and a.status == "AVAILABLE"]
 
-    # Exactly 10 roaming + 20 standby, all available without patients
-    assert len(available) == 30
-    assert len(roaming) == 10
-    assert len(standby) == 20
+    # Exactly 20 roaming + 40 standby, all available without patients
+    assert len(available) == 60
+    assert len(roaming) == 20
+    assert len(standby) == 40
 
     for a in mock_fleet.ambulances.values():
         assert a.has_patient is False
@@ -215,10 +216,10 @@ def test_patient_transport_dropoff_resumes_normal_fleet_behavior(graph_data):
 
 def test_fleet_summary(mock_fleet):
     summary = mock_fleet.get_summary()
-    assert summary.total == 30
-    assert summary.roaming == 10
-    assert summary.standby == 20
-    assert summary.available == 30
+    assert summary.total == 60
+    assert summary.roaming == 20
+    assert summary.standby == 40
+    assert summary.available == 60
     assert summary.dispatched == 0
     assert summary.with_patient == 0
 
@@ -226,9 +227,75 @@ def test_fleet_summary(mock_fleet):
 def test_fleet_reset(mock_fleet):
     mock_fleet.step(dt=100.0)
     mock_fleet.reset()
-    assert len(mock_fleet.ambulances) == 30
+    assert len(mock_fleet.ambulances) == 60
     available = [a for a in mock_fleet.ambulances.values() if a.status == "AVAILABLE"]
-    assert len(available) == 30
+    assert len(available) == 60
     roaming = [a for a in mock_fleet.ambulances.values() if a.is_roaming]
-    assert len(roaming) == 10
+    assert len(roaming) == 20
+
+
+def test_patient_to_hospital_routing_uses_congestion_aware_weights(graph_data):
+    # Two candidate hospitals: H_near at B (10m away from A), H_far at C (via A_C_DIRECT, 30m away)
+    hosp_near = Hospital(id="H_NEAR", name="Hospital Near", latitude=0.0, longitude=10.0, sumo_node_id="B", icu_beds=3)
+    hosp_far = Hospital(id="H_FAR", name="Hospital Far", latitude=0.0, longitude=20.0, sumo_node_id="C", icu_beds=3)
+
+    # When edge A_B is congested (0.5 m/s), travel time to B is 10/0.5 = 20s.
+    # Travel time to C via A_C_DIRECT is 30/10 = 3s.
+    # So patient pickup at A should route to H_FAR instead of H_NEAR!
+    live_traffic = {"A_B": 0.5}
+    fleet = AmbulanceFleet(
+        gd=graph_data,
+        hospitals=[hosp_near, hosp_far],
+        traffic_speeds_fn=lambda: (live_traffic, "redis"),
+    )
+    amb = fleet.ambulances["AMB-01"]
+    amb.latitude = 0.0
+    amb.longitude = 0.0
+    amb.current_node_id = "A"
+    amb.status = "DISPATCHED"
+    amb.target_type = "PATIENT"
+    amb.destination = AmbulanceDestination(
+        hospital_id="patient", hospital_name="Emergency Patient", latitude=0.0, longitude=0.0
+    )
+    amb.total_distance_m = 0.0
+    amb.current_distance_m = 0.0
+    amb.full_route_geometry = [[0.0, 0.0]]
+
+    # Step to trigger patient arrival and hospital routing
+    fleet.step(1.0)
+    assert amb.status == "BUSY"
+    assert amb.has_patient is True
+    assert amb.destination is not None
+    # Congestion-aware selection picks H_FAR (3s travel time) over H_NEAR (20s travel time)
+    assert amb.destination.hospital_id == "H_FAR"
+    assert amb.traffic_source == "redis"
+    assert "A_C_DIRECT" in amb.route_edge_ids
+
+
+def test_ambulance_movement_along_selected_route_at_congested_speed(graph_data):
+    # Test that ambulance physically moves progressively along the route without teleporting
+    hosp = Hospital(id="H1", name="Hospital 1", latitude=0.0, longitude=20.0, sumo_node_id="C", icu_beds=2)
+    # Severe congestion on all routes from A to C: 20m road at 1 m/s -> travel time = 20s
+    fleet = AmbulanceFleet(
+        gd=graph_data,
+        hospitals=[hosp],
+        traffic_speeds_fn=lambda: ({"A_B": 1.0, "B_C": 1.0, "A_C_DIRECT": 1.0}, "redis"),
+    )
+    amb = fleet.ambulances["AMB-15"]
+    amb.latitude = 0.0
+    amb.longitude = 0.0
+    amb.current_node_id = "A"
+
+    state = fleet.dispatch("AMB-15", hospital_id="H1", alpha_emergency=1.0)
+    assert state.status == "DISPATCHED"
+    assert amb.speed_mps == pytest.approx(1.0, rel=0.1)  # moves at congested speed ~1.0 m/s
+    initial_eta = amb.eta_seconds
+    assert initial_eta == pytest.approx(20.0, rel=0.1)
+
+    # Step by 5 seconds: should advance 5 meters without teleporting
+    fleet.step(5.0)
+    assert amb.current_distance_m == pytest.approx(5.0, abs=0.5)
+    assert amb.eta_seconds < initial_eta
+    assert amb.status == "DISPATCHED"
+    assert not amb.has_patient
 

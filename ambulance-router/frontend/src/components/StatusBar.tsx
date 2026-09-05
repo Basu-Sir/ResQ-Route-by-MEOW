@@ -1,4 +1,4 @@
-import type { FleetSummary, HealthResponse } from "../types";
+import type { FleetSummary, HealthResponse, TrafficCongestionResponse } from "../types";
 
 interface StatusBarProps {
   health: HealthResponse | null;
@@ -9,7 +9,9 @@ interface StatusBarProps {
   availableCount?: number;
   busyCount?: number;
   dispatchedCount?: number;
+  congestionData?: TrafficCongestionResponse | null;
 }
+
 
 function Dot({ ok }: { ok: boolean }) {
   return <span className={"status-dot " + (ok ? "status-dot--ok" : "status-dot--bad")} />;
@@ -24,6 +26,7 @@ export function StatusBar({
   availableCount = 0,
   busyCount = 0,
   dispatchedCount = 0,
+  congestionData,
 }: StatusBarProps) {
   const backendUp = !!health && !healthError;
 
@@ -58,6 +61,31 @@ export function StatusBar({
           <Dot ok={!!health?.redis_connected} />
           <span>{health?.redis_connected ? "Redis connected" : "Redis offline (fallback speeds)"}</span>
         </div>
+
+        {congestionData && (
+          <div
+            className="status-metric"
+            style={{
+              background: "rgba(255, 59, 48, 0.12)",
+              padding: "4px 10px",
+              borderRadius: "5px",
+              border: "1px solid rgba(255, 59, 48, 0.28)",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+            }}
+          >
+            <span>🚦 <strong>Redis Traffic:</strong></span>
+            <span style={{ color: "#FF3B30", fontWeight: "bold" }}>
+              🔴 {congestionData.heavy_count} Heavy
+            </span>
+            <span style={{ color: "#666" }}>|</span>
+            <span style={{ color: "#FFCC00", fontWeight: "bold" }}>
+              🟡 {congestionData.moderate_count} Moderate
+            </span>
+          </div>
+        )}
+
 
         <div className="status-metric">
           <span className="value-mono">{hospitalCount}</span>

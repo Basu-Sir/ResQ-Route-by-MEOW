@@ -8,7 +8,9 @@ import type {
   HospitalListItem,
   RouteRequest,
   RouteResponse,
+  TrafficCongestionResponse,
 } from "../types";
+
 
 // All calls go through /api, which vite.config.ts proxies to the existing
 // FastAPI service at http://127.0.0.1:3000. Nothing here talks to SUMO,
@@ -105,4 +107,17 @@ export function resetAmbulances(): Promise<AmbulanceState[]> {
   });
 }
 
+/** GET /traffic/congestion — fetches live congested road segments (Red/Yellow) from Redis. */
+export function fetchTrafficCongestion(limit = 400): Promise<TrafficCongestionResponse> {
+  return request<TrafficCongestionResponse>(`/traffic/congestion?limit=${limit}`);
+}
+
+/** POST /traffic/seed — triggers re-seeding of realistic traffic in Redis. */
+export function seedTraffic(limit = 400): Promise<TrafficCongestionResponse> {
+  return request<TrafficCongestionResponse>(`/traffic/seed?limit=${limit}`, {
+    method: "POST",
+  });
+}
+
 export { ApiError };
+

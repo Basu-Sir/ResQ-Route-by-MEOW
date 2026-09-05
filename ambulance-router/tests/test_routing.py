@@ -61,6 +61,60 @@ def test_live_redis_speed_changes_routing_decision(graph_data):
     assert result.edge_ids == ["A_C_DIRECT"]
 
 
+def test_congested_shorter_route_loses_to_less_congested_longer_route(graph_data):
+    # Under static conditions:
+    # Path 1: A -> B -> C: length 10m + 10m = 20m, speed 10 m/s -> travel time = 2.0s
+    # Path 2: A -> C (direct): length 30m, speed 10 m/s -> travel time = 3.0s
+    # When B_C is congested (speed = 0.5 m/s):
+    # Path 1 travel time becomes 1.0s + 20.0s = 21.0s.
+    # Path 2 travel time is 3.0s, so the longer 30m route wins!
+    hospitals = [Hospital(id="H_C", name="Hospital C", latitude=0, longitude=0, sumo_node_id="C", icu_beds=1)]
+    redis_speeds = {"B_C": 0.5}
+    result = find_route_to_nearest_hospital(graph_data, "A", hospitals, redis_speeds, alpha_emergency=1.0)
+    assert result.edge_ids == ["A_C_DIRECT"]
+    assert result.distance_meters == 30.0
+    assert result.travel_time_seconds == pytest.approx(3.0)
+
+
+def test_live_redis_speed_values_affect_route_selection(graph_data):
+    # When all roads are free, the 20m path (A_B + B_C) is chosen
+    hospitals = [Hospital(id="H_C", name="Hospital C", latitude=0, longitude=0, sumo_node_id="C", icu_beds=1)]
+    free_result = find_route_to_nearest_hospital(graph_data, "A", hospitals, {}, alpha_emergency=1.0)
+    assert free_result.edge_ids == ["A_B", "B_C"]
+
+    # When live Redis reports congestion on A_B (0.5 m/s), A_C_DIRECT is chosen
+    congested_result = find_route_to_nearest_hospital(graph_data, "A", hospitals, {"A_B": 0.5}, alpha_emergency=1.0)
+    assert congested_result.edge_ids == ["A_C_DIRECT"]
+
+
+def test_fallback_to_static_sumo_speed_when_redis_has_no_value(graph_data):
+    # Empty redis_speeds dict falls back to static speeds on each edge
+    hospitals = [Hospital(id="H_C", name="Hospital C", latitude=0, longitude=0, sumo_node_id="C", icu_beds=1)]
+    result = find_route_to_nearest_hospital(graph_data, "A", hospitals, redis_speeds={}, alpha_emergency=1.0)
+    assert result.edge_ids == ["A_B", "B_C"]
+    assert result.travel_time_seconds == pytest.approx(2.0)  # (10/10) + (10/10) = 2.0s
+
+
+def test_zero_and_invalid_speed_handling():
+    # Negative speeds clamped to MIN_EFFECTIVE_SPEED
+    assert compute_effective_speed(-10.0) == 0.5
+    # Zero speed clamped
+    assert compute_effective_speed(0.0) == 0.5
+    # NaN and inf clamped
+    assert compute_effective_speed(float("nan")) == 0.5
+    assert compute_effective_speed(float("inf")) == 0.5
+    # Non-numeric string clamped
+    assert compute_effective_speed("bad_speed") == 0.5
+    # None clamped
+    assert compute_effective_speed(None) == 0.5
+
+    # resolve_edge_speed falls back to static when redis value is None or invalid
+    assert resolve_edge_speed("E1", static_speed=13.9, redis_speeds={"E1": None}) == 13.9
+    assert resolve_edge_speed("E1", static_speed=13.9, redis_speeds={"E1": "invalid"}) == 13.9
+    # resolve_edge_speed clamps zero in redis to MIN_EFFECTIVE_SPEED
+    assert resolve_edge_speed("E1", static_speed=13.9, redis_speeds={"E1": 0.0}) == 0.5
+
+
 def test_no_hospital_with_valid_node_raises(graph_data):
     hospitals = [Hospital(id="H1", name="H", latitude=0, longitude=0,
                            sumo_node_id="NOT_A_NODE", icu_beds=1)]

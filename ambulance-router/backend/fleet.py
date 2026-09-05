@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
 from backend.graph_loader import (
+    EdgeStatic,
     GraphData,
     edge_ids_to_lonlat_geometry,
     nearest_node_from_latlon,
@@ -85,8 +86,31 @@ class Ambulance:
     current_distance_m: float = 0.0
     speed_mps: float = 12.0  # ~43 km/h effective ambulance speed
     current_node_id: Optional[str] = None
+    current_edge_id: Optional[str] = None
+    edge_cumulative_distances: List[float] = field(default_factory=list)
+    alpha_emergency: float = 1.5
+    traffic_source: Optional[str] = None
+    traffic_condition: Optional[str] = None
+    patient_delivered: bool = False
+    delivered_hospital_name: Optional[str] = None
+    dropoff_dwell_seconds: float = 0.0
+
+    @property
+    def remaining_distance_m(self) -> float:
+        return max(0.0, self.total_distance_m - self.current_distance_m)
 
     def to_model(self) -> AmbulanceState:
+        if self.is_roaming or self.status in ("BUSY", "DISPATCHED"):
+            remaining_dist = round(max(0.0, self.total_distance_m - self.current_distance_m), 1)
+        else:
+            remaining_dist = 0.0
+
+        eta_sec = self.eta_seconds
+        if eta_sec is not None:
+            eta_sec = round(max(0.0, eta_sec), 1)
+        elif self.status in ("BUSY", "DISPATCHED"):
+            eta_sec = 0.0
+
         return AmbulanceState(
             ambulance_id=self.ambulance_id,
             latitude=round(self.latitude, 6),
@@ -95,21 +119,106 @@ class Ambulance:
             has_patient=self.has_patient,
             is_roaming=self.is_roaming,
             destination=self.destination,
-            eta_seconds=round(self.eta_seconds, 1) if self.eta_seconds is not None else None,
+            eta_seconds=eta_sec,
+            remaining_distance_meters=remaining_dist,
             route_geometry=self.route_geometry,
+            traffic_source=self.traffic_source,
+            traffic_condition=self.traffic_condition,
+            patient_delivered=self.patient_delivered,
+            delivered_hospital_name=self.delivered_hospital_name,
         )
 
 
+def compute_effective_ambulance_speed(
+    total_dist_m: float,
+    travel_time_seconds: float = 0.0,
+    alpha_emergency: float = 1.0,
+    edge_ids: Optional[List[str]] = None,
+    redis_speeds: Optional[Dict[str, float]] = None,
+    current_edge_id: Optional[str] = None,
+    edge_static_dict: Optional[Dict[str, EdgeStatic]] = None,
+) -> Tuple[float, str]:
+    """
+    Adjust movement & ETA timing ensuring:
+    CLEAR > YELLOW > RED in effective speed at all times.
+    Therefore clear roads always produce a shorter ETA than yellow,
+    and yellow always produces a shorter ETA than red.
+
+    Scaling is distance-aware:
+    - Micro/unit-test routes (<= 100m) maintain unscaled physical speed (1.0 - 10.0 m/s).
+    - Long-distance demo routes (> 100m) scale smoothly up to 5x so ambulances
+      arrive within demo-friendly timeframes.
+    """
+    alpha = max(1.0, min(float(alpha_emergency), 2.0))
+    if total_dist_m <= 0:
+        return (12.0 * alpha, "CLEAR")
+
+    if total_dist_m <= 100.0:
+        scale = 1.0
+    else:
+        scale = min(5.0, 1.0 + (total_dist_m - 100.0) / 600.0)
+
+    target_edge = current_edge_id
+    if not target_edge and edge_ids:
+        target_edge = edge_ids[0]
+
+    if target_edge:
+        edge_spd = None
+        if redis_speeds:
+            edge_spd = redis_speeds.get(target_edge)
+        if edge_spd is None and edge_static_dict:
+            st = edge_static_dict.get(target_edge)
+            if st and st.max_speed > 0:
+                edge_spd = st.max_speed
+        if edge_spd is None:
+            edge_spd = 13.8  # Default ~50 km/h clear speed
+
+        if edge_spd <= 2.8:
+            condition = "RED"
+            base_speed = max(1.0, min(edge_spd, 2.5))
+        elif edge_spd <= 7.0:
+            condition = "YELLOW"
+            base_speed = min(max(edge_spd, 4.0), 6.5)
+        else:
+            condition = "CLEAR"
+            base_speed = max(edge_spd, 9.5)
+    else:
+        raw_speed = (total_dist_m / travel_time_seconds) if travel_time_seconds > 0 else 12.0
+        if raw_speed <= 3.0:
+            condition = "RED"
+            base_speed = max(1.0, min(raw_speed, 2.5))
+        elif raw_speed <= 7.0:
+            condition = "YELLOW"
+            base_speed = min(max(raw_speed, 4.0), 6.5)
+        else:
+            condition = "CLEAR"
+            base_speed = max(raw_speed, 9.5)
+
+    if condition == "CLEAR":
+        effective_speed = max(9.5 * scale * alpha, base_speed * scale * alpha)
+    elif condition == "YELLOW":
+        effective_speed = min(8.5 * scale * alpha, max(3.5 * scale * alpha, base_speed * scale * alpha))
+    else:  # RED
+        effective_speed = min(3.0 * scale * alpha, max(1.0 * scale, base_speed * scale * alpha))
+
+    return (round(effective_speed, 2), condition)
+
+
 class AmbulanceFleet:
+
     def __init__(
         self,
         gd: GraphData,
         hospitals: List[Hospital],
         traffic_speeds_fn: Optional[Callable[[], Tuple[Dict[str, float], str]]] = None,
+        num_ambulances: int = 60,
+        num_roaming: int = 20,
     ):
         self.gd = gd
         self.hospitals = hospitals
         self.traffic_speeds_fn = traffic_speeds_fn or (lambda: ({}, "static"))
+        self.num_ambulances = num_ambulances
+        self.num_roaming = num_roaming
         self.ambulances: Dict[str, Ambulance] = {}
         self._lock = threading.RLock()
         self._running = False
@@ -143,6 +252,40 @@ class AmbulanceFleet:
             return (scaled_dists, target_total_meters)
 
         return (dists, raw_total)
+
+    def _build_edge_cumulative_distances(
+        self, edge_ids: List[str], target_total_m: float
+    ) -> List[float]:
+        """Build cumulative distance offsets for each edge in the route."""
+        if not edge_ids:
+            return [0.0]
+        raw_dists = [0.0]
+        known_length_total = 0.0
+        for eid in edge_ids:
+            edge = self.gd.edge_static.get(eid) if self.gd and self.gd.edge_static else None
+            length = edge.length if edge else 0.0
+            known_length_total += length
+            raw_dists.append(raw_dists[-1] + length)
+
+        if known_length_total <= 0 and target_total_m > 0:
+            step = target_total_m / len(edge_ids)
+            return [i * step for i in range(len(edge_ids) + 1)]
+
+        total_raw = raw_dists[-1]
+        if target_total_m > 0 and total_raw > 0 and abs(total_raw - target_total_m) > 1e-3:
+            scale = target_total_m / total_raw
+            return [d * scale for d in raw_dists]
+        return raw_dists
+
+    def _get_current_edge_id(self, amb: Ambulance, current_dist: float) -> Optional[str]:
+        """Resolve the exact edge ID the ambulance is currently traversing along its route."""
+        if not amb.route_edge_ids:
+            return None
+        if not amb.edge_cumulative_distances or len(amb.edge_cumulative_distances) <= 1:
+            return amb.route_edge_ids[0]
+        idx = bisect.bisect_right(amb.edge_cumulative_distances, current_dist) - 1
+        idx = max(0, min(idx, len(amb.route_edge_ids) - 1))
+        return amb.route_edge_ids[idx]
 
     def _interpolate_position(
         self, points: List[List[float]], cum_dists: List[float], current_dist: float
@@ -182,21 +325,64 @@ class AmbulanceFleet:
 
     def initialize_fleet(self) -> None:
         """
-        Create exactly 30 simulated ambulances placed at valid Mumbai network locations:
-        - 10 ROAMING: status=AVAILABLE, has_patient=False, is_roaming=True (continuously roaming)
-        - 20 STANDBY: status=AVAILABLE, has_patient=False, is_roaming=False (stationary until dispatched)
+        Create simulated ambulances placed at valid Mumbai network locations:
+        - ROAMING: status=AVAILABLE, has_patient=False, is_roaming=True (continuously roaming)
+        - STANDBY: status=AVAILABLE, has_patient=False, is_roaming=False (stationary until dispatched)
         """
         with self._lock:
             self.ambulances.clear()
-            num_amb = 30
+            num_amb = self.num_ambulances
+            num_roaming = self.num_roaming
 
             # 1. Determine valid initial candidate locations from hospitals or graph nodes
             candidate_locations: List[Tuple[float, float, str, Optional[Hospital]]] = []
             if self.hospitals and len(self.hospitals) >= num_amb:
-                sorted_hospitals = sorted(self.hospitals, key=lambda h: h.latitude)
-                step = len(sorted_hospitals) // num_amb
-                for i in range(num_amb):
-                    h = sorted_hospitals[min(i * step, len(sorted_hospitals) - 1)]
+                # Distribute ambulances spatially across Mumbai using 2D grid binning
+                # This guarantees broad geographical coverage across North, South, East, and West Mumbai
+                # so that no region is left without available nearby ambulances.
+                min_lat = min(h.latitude for h in self.hospitals)
+                max_lat = max(h.latitude for h in self.hospitals)
+                min_lon = min(h.longitude for h in self.hospitals)
+                max_lon = max(h.longitude for h in self.hospitals)
+
+                lat_span = max(max_lat - min_lat, 1e-4)
+                lon_span = max(max_lon - min_lon, 1e-4)
+
+                cells: Dict[Tuple[int, int], List[Hospital]] = {}
+                for h in self.hospitals:
+                    lat_idx = min(9, max(0, int((h.latitude - min_lat) / lat_span * 10)))
+                    lon_idx = min(5, max(0, int((h.longitude - min_lon) / lon_span * 6)))
+                    cells.setdefault((lat_idx, lon_idx), []).append(h)
+
+                allocations: Dict[Tuple[int, int], int] = {k: 1 for k in cells}
+                rem = num_amb - len(cells)
+                if rem > 0:
+                    sorted_cells = sorted(cells.keys(), key=lambda k: len(cells[k]), reverse=True)
+                    for i in range(rem):
+                        allocations[sorted_cells[i % len(sorted_cells)]] += 1
+                elif rem < 0:
+                    sorted_cells = sorted(cells.keys(), key=lambda k: len(cells[k]), reverse=True)
+                    allocations = {k: 1 for k in sorted_cells[:num_amb]}
+
+                raw_chosen: List[Hospital] = []
+                for k in sorted(allocations.keys()):
+                    count = allocations[k]
+                    cell_hospitals = cells[k]
+                    step = max(1, len(cell_hospitals) // count)
+                    for c in range(count):
+                        raw_chosen.append(cell_hospitals[min(c * step, len(cell_hospitals) - 1)])
+
+                raw_chosen = raw_chosen[:num_amb]
+                while len(raw_chosen) < num_amb:
+                    raw_chosen.append(self.hospitals[len(raw_chosen) % len(self.hospitals)])
+
+                # Order locations so roaming (first num_roaming) and standby (remaining)
+                # are BOTH evenly distributed across the entire South-North / West-East span
+                roaming_indices = [int(i * num_amb / num_roaming) for i in range(num_roaming)]
+                standby_indices = [i for i in range(num_amb) if i not in roaming_indices]
+                ordered_chosen = [raw_chosen[idx] for idx in (roaming_indices + standby_indices)]
+
+                for h in ordered_chosen:
                     candidate_locations.append((h.latitude, h.longitude, h.sumo_node_id, h))
             elif self.gd.node_coords:
                 nodes = list(self.gd.node_coords.keys())
@@ -215,16 +401,16 @@ class AmbulanceFleet:
                 for i in range(num_amb):
                     candidate_locations.append((19.0760 + i * 0.005, 72.8777 + i * 0.005, f"node_{i}", None))
 
-            # 2. Create 30 ambulances
+            # 2. Create ambulances
             for i in range(num_amb):
                 amb_num = i + 1
                 amb_id = f"AMB-{amb_num:02d}"
                 lat, lon, node_id, hosp = candidate_locations[i]
 
-                is_roaming = (i < 10)  # Exactly 10 roaming, 20 standby
+                is_roaming = (i < num_roaming)
                 status_desc = "ROAMING" if is_roaming else "STANDBY"
 
-                logger.info("Initializing ambulance %d/30 (id=%s, type=%s)...", amb_num, amb_id, status_desc)
+                logger.info("Initializing ambulance %d/%d (id=%s, type=%s)...", amb_num, num_amb, amb_id, status_desc)
 
                 amb = Ambulance(
                     ambulance_id=amb_id,
@@ -245,7 +431,7 @@ class AmbulanceFleet:
 
                 self.ambulances[amb_id] = amb
 
-            logger.info("Fleet initialization complete: 30 ambulances initialized (10 ROAMING, 20 STANDBY).")
+            logger.info("Fleet initialization complete: %d ambulances initialized (%d ROAMING, %d STANDBY).", num_amb, num_roaming, num_amb - num_roaming)
             self._last_tick = time.time()
 
     def _assign_roaming_route(
@@ -255,7 +441,7 @@ class AmbulanceFleet:
         index_hint: int = 0,
     ) -> None:
         """Assign next roaming route along real SUMO road geometry."""
-        speeds, _ = self.traffic_speeds_fn()
+        speeds, source_label = self.traffic_speeds_fn()
         source_node = amb.current_node_id
         if not source_node or source_node not in self.gd.node_index:
             source_node = nearest_node_from_latlon(self.gd, amb.latitude, amb.longitude)
@@ -297,14 +483,35 @@ class AmbulanceFleet:
                     longitude=result.hospital.longitude,
                 )
                 amb.route_edge_ids = result.edge_ids
+                amb.edge_cumulative_distances = self._build_edge_cumulative_distances(
+                    result.edge_ids, total_dist
+                )
                 amb.full_route_geometry = geometry
                 amb.route_geometry = geometry
                 amb.cumulative_distances = cum_dists
                 amb.total_distance_m = total_dist
+                amb.traffic_source = source_label
+                amb.alpha_emergency = 1.0
+
                 # Stagger progress slightly on startup if index_hint given
                 stagger_frac = (0.10 + (index_hint % 5) * 0.08) if index_hint > 0 else 0.0
                 init_dist = total_dist * stagger_frac
                 amb.current_distance_m = init_dist
+
+                curr_eid = self._get_current_edge_id(amb, init_dist)
+                amb.current_edge_id = curr_eid
+                travel_sec = result.travel_time_seconds if hasattr(result, "travel_time_seconds") else (total_dist / 12.0)
+                eff_speed, cond = compute_effective_ambulance_speed(
+                    total_dist_m=total_dist,
+                    travel_time_seconds=travel_sec,
+                    alpha_emergency=1.0,
+                    edge_ids=result.edge_ids if hasattr(result, "edge_ids") else None,
+                    redis_speeds=speeds,
+                    current_edge_id=curr_eid,
+                    edge_static_dict=self.gd.edge_static,
+                )
+                amb.speed_mps = eff_speed
+                amb.traffic_condition = cond
 
                 lat, lon, remaining = self._interpolate_position(geometry, cum_dists, init_dist)
                 amb.latitude = lat
@@ -373,7 +580,7 @@ class AmbulanceFleet:
     def _route_to_nearest_hospital(self, amb: Ambulance) -> None:
         """
         Route ambulance from patient location to the nearest suitable hospital
-        using existing static SUMO/rustworkx routing (no traffic, static speeds).
+        using congestion-aware SUMO/rustworkx routing.
         """
         source_node = nearest_node_from_latlon(self.gd, amb.latitude, amb.longitude)
         amb.current_node_id = source_node
@@ -383,16 +590,24 @@ class AmbulanceFleet:
             available_hospitals = self.hospitals
 
         routed = False
+        speeds, source_label = self.traffic_speeds_fn()
+
         if available_hospitals and source_node in self.gd.node_index:
             try:
-                # Use existing normal/static routing speeds (redis_speeds={}, alpha_emergency=1.0)
+                # 1. Avoid doorstep dropoff at the exact same node (sumo_node_id == source_node)
+                # to prevent 0-meter routes and straight-line jumps across courtyards.
+                candidates = [h for h in available_hospitals if h.sumo_node_id != source_node]
+                if not candidates:
+                    candidates = available_hospitals
+
                 result = find_route_to_nearest_hospital(
                     self.gd,
                     source_node,
-                    available_hospitals,
-                    redis_speeds={},
+                    candidates,
+                    redis_speeds=speeds,
                     alpha_emergency=1.0,
                 )
+
                 geometry = edge_ids_to_lonlat_geometry(self.gd, result.edge_ids)
                 if not geometry or len(geometry) < 2:
                     geometry = [
@@ -415,16 +630,38 @@ class AmbulanceFleet:
                     longitude=result.hospital.longitude,
                 )
                 amb.route_edge_ids = result.edge_ids
+                amb.edge_cumulative_distances = self._build_edge_cumulative_distances(
+                    result.edge_ids, total_dist
+                )
                 amb.full_route_geometry = geometry
                 amb.route_geometry = geometry
                 amb.cumulative_distances = cum_dists
                 amb.total_distance_m = total_dist
                 amb.current_distance_m = 0.0
+                amb.alpha_emergency = 1.5
+
+                # Congestion-aware travel time and speed (CLEAR > YELLOW > RED)
+                amb.traffic_source = source_label
+                curr_eid = self._get_current_edge_id(amb, 0.0)
+                amb.current_edge_id = curr_eid
+                eff_speed, cond = compute_effective_ambulance_speed(
+                    total_dist_m=total_dist,
+                    travel_time_seconds=result.travel_time_seconds,
+                    alpha_emergency=1.5,
+                    edge_ids=result.edge_ids,
+                    redis_speeds=speeds,
+                    current_edge_id=curr_eid,
+                    edge_static_dict=self.gd.edge_static,
+                )
+                amb.speed_mps = eff_speed
                 amb.eta_seconds = total_dist / max(amb.speed_mps, 0.5)
+                amb.traffic_condition = cond
+
+
                 routed = True
                 logger.info(
-                    "Ambulance %s picked up patient, routed to nearest hospital %s (%s). Dist: %.1fm, ETA: %.1fs",
-                    amb.ambulance_id, result.hospital.id, result.hospital.name, total_dist, amb.eta_seconds,
+                    "Ambulance %s picked up patient, routed to nearest hospital %s (%s) [%s]. Dist: %.1fm, ETA: %.1fs",
+                    amb.ambulance_id, result.hospital.id, result.hospital.name, source_label, total_dist, amb.eta_seconds,
                 )
             except Exception as exc:
                 logger.warning("Routing to hospital failed for %s: %s", amb.ambulance_id, exc)
@@ -457,6 +694,23 @@ class AmbulanceFleet:
 
         with self._lock:
             for amb in self.ambulances.values():
+                # If ambulance is currently dwelling at hospital after delivering a patient:
+                if amb.dropoff_dwell_seconds > 0:
+                    amb.dropoff_dwell_seconds = max(0.0, amb.dropoff_dwell_seconds - dt)
+                    if amb.dropoff_dwell_seconds <= 0:
+                        amb.patient_delivered = False
+                        amb.delivered_hospital_name = None
+                        amb.speed_mps = 12.0
+                        if amb.original_roaming:
+                            amb.is_roaming = True
+                            amb.current_node_id = nearest_node_from_latlon(self.gd, amb.latitude, amb.longitude)
+                            self._assign_roaming_route(amb)
+                            logger.info("Ambulance %s resumed roaming patrol after dropoff dwell.", amb.ambulance_id)
+                        else:
+                            amb.is_roaming = False
+                            logger.info("Ambulance %s remaining stationary at base.", amb.ambulance_id)
+                    continue
+
                 # Only ambulances with active routes move (roaming, dispatched, or busy)
                 if amb.full_route_geometry and (amb.is_roaming or amb.status in ("BUSY", "DISPATCHED")):
                     progress = amb.speed_mps * dt
@@ -476,12 +730,15 @@ class AmbulanceFleet:
 
                         elif amb.target_type == "HOSPITAL":
                             # 2. HOSPITAL ARRIVAL: Drop off patient
+                            hosp_name = amb.destination.hospital_name if amb.destination else "Hospital"
                             logger.info(
-                                "Ambulance %s arrived at hospital %s! Patient dropped off.",
+                                "Ambulance %s arrived at hospital %s! Patient safely dropped off.",
                                 amb.ambulance_id,
-                                amb.destination.hospital_name if amb.destination else "",
+                                hosp_name,
                             )
                             amb.has_patient = False
+                            amb.patient_delivered = True
+                            amb.delivered_hospital_name = hosp_name
                             amb.status = "AVAILABLE"
                             amb.target_type = None
                             amb.destination = None
@@ -490,18 +747,26 @@ class AmbulanceFleet:
                             amb.route_geometry = []
                             amb.route_edge_ids = []
                             amb.cumulative_distances = []
+                            amb.edge_cumulative_distances = []
                             amb.current_distance_m = 0.0
                             amb.total_distance_m = 0.0
-                            amb.speed_mps = 12.0
+                            amb.speed_mps = 0.0
+                            amb.current_edge_id = None
+                            amb.traffic_condition = "CLEAR"
 
-                            if amb.original_roaming:
-                                amb.is_roaming = True
-                                amb.current_node_id = nearest_node_from_latlon(self.gd, amb.latitude, amb.longitude)
-                                self._assign_roaming_route(amb)
-                                logger.info("Ambulance %s resumed roaming patrol.", amb.ambulance_id)
+                            if dt >= 10.0:
+                                amb.dropoff_dwell_seconds = 0.0
+                                if amb.original_roaming:
+                                    amb.is_roaming = True
+                                    amb.current_node_id = nearest_node_from_latlon(self.gd, amb.latitude, amb.longitude)
+                                    self._assign_roaming_route(amb)
+                                    logger.info("Ambulance %s resumed roaming patrol.", amb.ambulance_id)
+                                else:
+                                    amb.is_roaming = False
+                                    logger.info("Ambulance %s remaining stationary at base.", amb.ambulance_id)
                             else:
-                                amb.is_roaming = False
-                                logger.info("Ambulance %s remaining stationary at base.", amb.ambulance_id)
+                                amb.dropoff_dwell_seconds = 6.0
+                                logger.info("Ambulance %s dwelling at %s for 6s handover.", amb.ambulance_id, hosp_name)
 
                         elif amb.is_roaming and amb.status == "AVAILABLE" and not amb.has_patient:
                             # Roaming ambulance arrived at its patrol destination -> auto-choose next route!
@@ -514,13 +779,16 @@ class AmbulanceFleet:
                             amb.has_patient = False
                             amb.target_type = None
                             amb.destination = None
-                            amb.eta_seconds = None
+                            amb.eta_seconds = 0.0
                             amb.full_route_geometry = []
                             amb.route_geometry = []
                             amb.route_edge_ids = []
                             amb.cumulative_distances = []
+                            amb.edge_cumulative_distances = []
                             amb.current_distance_m = 0.0
                             amb.total_distance_m = 0.0
+                            amb.current_edge_id = None
+                            amb.traffic_condition = "CLEAR"
                             if amb.original_roaming:
                                 amb.is_roaming = True
                                 amb.current_node_id = nearest_node_from_latlon(self.gd, amb.latitude, amb.longitude)
@@ -538,6 +806,21 @@ class AmbulanceFleet:
                         amb.route_geometry = remaining
 
                         remaining_dist = max(0.0, amb.total_distance_m - new_dist)
+
+                        # Dynamically re-evaluate traffic condition and speed for current road segment
+                        curr_eid = self._get_current_edge_id(amb, new_dist)
+                        amb.current_edge_id = curr_eid
+                        speeds, source_label = self.traffic_speeds_fn()
+                        eff_speed, cond = compute_effective_ambulance_speed(
+                            total_dist_m=amb.total_distance_m,
+                            alpha_emergency=amb.alpha_emergency,
+                            current_edge_id=curr_eid,
+                            redis_speeds=speeds,
+                            edge_static_dict=self.gd.edge_static,
+                        )
+                        amb.speed_mps = eff_speed
+                        amb.traffic_condition = cond
+                        amb.traffic_source = source_label
                         amb.eta_seconds = remaining_dist / max(amb.speed_mps, 0.5)
 
     def request_ambulance(
@@ -563,7 +846,7 @@ class AmbulanceFleet:
             if not available_ambs:
                 raise ValueError("No available ambulances found for emergency request")
 
-            speeds, _ = self.traffic_speeds_fn()
+            speeds, source_label = self.traffic_speeds_fn()
             patient_node = nearest_node_from_latlon(self.gd, patient_lat, patient_lon)
 
             # 2. Evaluate road routing cost from each available ambulance to patient
@@ -606,6 +889,9 @@ class AmbulanceFleet:
             best_amb.is_roaming = False  # Immediately ceases roaming!
             best_amb.has_patient = False
             best_amb.target_type = "PATIENT"
+            best_amb.patient_delivered = False
+            best_amb.delivered_hospital_name = None
+            best_amb.dropoff_dwell_seconds = 0.0
 
             # 4. Build geometry and assign route toward patient
             geometry = []
@@ -628,13 +914,32 @@ class AmbulanceFleet:
                 longitude=patient_lon,
             )
             best_amb.route_edge_ids = best_result.edge_ids
+            best_amb.edge_cumulative_distances = self._build_edge_cumulative_distances(
+                best_result.edge_ids, total_dist
+            )
             best_amb.full_route_geometry = geometry
             best_amb.route_geometry = geometry
             best_amb.cumulative_distances = cum_dists
             best_amb.total_distance_m = total_dist
             best_amb.current_distance_m = 0.0
-            best_amb.speed_mps = max(12.0, 12.0 * alpha_emergency)
+            best_amb.alpha_emergency = alpha_emergency
+
+            best_amb.traffic_source = source_label
+            curr_eid = self._get_current_edge_id(best_amb, 0.0)
+            best_amb.current_edge_id = curr_eid
+            eff_speed, cond = compute_effective_ambulance_speed(
+                total_dist_m=total_dist,
+                travel_time_seconds=best_result.travel_time_seconds,
+                alpha_emergency=alpha_emergency,
+                edge_ids=best_result.edge_ids,
+                redis_speeds=speeds,
+                current_edge_id=curr_eid,
+                edge_static_dict=self.gd.edge_static,
+            )
+            best_amb.speed_mps = eff_speed
             best_amb.eta_seconds = total_dist / max(best_amb.speed_mps, 0.5)
+            best_amb.traffic_condition = cond
+
 
             logger.info(
                 "Dispatched ambulance %s (prev roaming=%s) to patient at (%.4f, %.4f). ETA: %.1fs",
@@ -682,7 +987,7 @@ class AmbulanceFleet:
                 if not available:
                     raise NoAvailableHospitalError("No hospitals with available ICU beds found")
 
-            speeds, _ = self.traffic_speeds_fn()
+            speeds, source_label = self.traffic_speeds_fn()
             source_node = nearest_node_from_latlon(self.gd, amb.latitude, amb.longitude)
 
             if target_hospital:
@@ -716,13 +1021,32 @@ class AmbulanceFleet:
                 longitude=result.hospital.longitude,
             )
             amb.route_edge_ids = result.edge_ids
+            amb.edge_cumulative_distances = self._build_edge_cumulative_distances(
+                result.edge_ids, total_dist
+            )
             amb.full_route_geometry = geometry
             amb.cumulative_distances = cum_dists
             amb.total_distance_m = total_dist
             amb.current_distance_m = 0.0
             amb.route_geometry = geometry
-            amb.speed_mps = max(10.0, 12.0 * alpha_emergency)
+            amb.traffic_source = source_label
+            amb.alpha_emergency = alpha_emergency
+
+            curr_eid = self._get_current_edge_id(amb, 0.0)
+            amb.current_edge_id = curr_eid
+            eff_speed, cond = compute_effective_ambulance_speed(
+                total_dist_m=total_dist,
+                travel_time_seconds=result.travel_time_seconds,
+                alpha_emergency=alpha_emergency,
+                edge_ids=result.edge_ids,
+                redis_speeds=speeds,
+                current_edge_id=curr_eid,
+                edge_static_dict=self.gd.edge_static,
+            )
+            amb.speed_mps = eff_speed
             amb.eta_seconds = total_dist / max(amb.speed_mps, 0.5)
+            amb.traffic_condition = cond
+
 
             return amb.to_model()
 
@@ -744,7 +1068,7 @@ class AmbulanceFleet:
             )
 
     def get_all(self) -> List[AmbulanceState]:
-        """Return states of all 30 ambulances."""
+        """Return states of all ambulances."""
         with self._lock:
             now = time.time()
             dt = now - self._last_tick

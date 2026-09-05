@@ -30,20 +30,20 @@ def test_get_all_ambulances_endpoint(client):
     resp = client.get("/ambulances")
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 30
+    assert len(data) == 60
 
     ids = [a["ambulance_id"] for a in data]
     assert "AMB-01" in ids
-    assert "AMB-30" in ids
+    assert "AMB-60" in ids
 
-    # Check status distribution: 10 roaming, 20 standby, all 30 available
+    # Check status distribution: 20 roaming, 40 standby, all 60 available
     available = [a for a in data if a["status"] == "AVAILABLE"]
     roaming = [a for a in data if a.get("is_roaming") is True]
     standby = [a for a in data if not a.get("is_roaming")]
 
-    assert len(available) == 30
-    assert len(roaming) == 10
-    assert len(standby) == 20
+    assert len(available) == 60
+    assert len(roaming) == 20
+    assert len(standby) == 40
 
     for a in data:
         assert a["has_patient"] is False
@@ -114,10 +114,10 @@ def test_fleet_summary_endpoint(client):
     resp = client.get("/ambulances/summary")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["total"] == 30
-    assert data["roaming"] == 10
-    assert data["standby"] == 20
-    assert data["available"] == 30
+    assert data["total"] == 60
+    assert data["roaming"] == 20
+    assert data["standby"] == 40
+    assert data["available"] == 60
     assert data["dispatched"] == 0
     assert data["with_patient"] == 0
 
@@ -126,21 +126,21 @@ def test_step_simulation_endpoint(client):
     resp = client.post("/ambulances/step", json={"seconds": 2.0})
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 30
+    assert len(data) == 60
 
 
 def test_reset_simulation_endpoint(client):
     resp = client.post("/ambulances/reset")
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 30
+    assert len(data) == 60
     available = [a for a in data if a["status"] == "AVAILABLE"]
-    assert len(available) == 30
+    assert len(available) == 60
 
 
 def test_health_reports_ambulances(client):
     resp = client.get("/health")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["ambulances_loaded"] == 30
+    assert data["ambulances_loaded"] == 60
 

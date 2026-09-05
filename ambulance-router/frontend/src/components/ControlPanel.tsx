@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
- 
+import { formatDistanceKm, formatEta } from "./MapView";
 import type { EmergencyResponse, LatLng } from "../types";
+
 
 interface ControlPanelProps {
   ambulancePos: LatLng;
@@ -15,6 +16,7 @@ interface ControlPanelProps {
   emergencyError: string | null;
   onDispatch: () => void;
   loading: boolean;
+  onClearEmergency?: () => void;
 }
 
 const PRIORITY_PRESETS = [
@@ -36,6 +38,7 @@ export function ControlPanel({
   emergencyError,
   onDispatch,
   loading,
+  onClearEmergency,
 }: ControlPanelProps) {
   // Emergency patient coordinates
   const [patLatInput, setPatLatInput] = useState(patientPos.lat.toFixed(6));
@@ -161,60 +164,140 @@ export function ControlPanel({
               padding: "14px",
               background: "rgba(38, 49, 64, 0.5)",
               borderRadius: "6px",
-              border: `1px solid ${lastEmergency.ambulance.has_patient ? "#FF4D5E" : "#35D48C"}`,
+              border: `1px solid ${
+                lastEmergency.ambulance.patient_delivered
+                  ? "#34D399"
+                  : lastEmergency.ambulance.has_patient
+                  ? "#FF4D5E"
+                  : "#35D48C"
+              }`,
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-              <strong style={{ fontSize: "14px", color: lastEmergency.ambulance.has_patient ? "#FF4D5E" : "#35D48C" }}>
-                🚑 {lastEmergency.ambulance.ambulance_id} {lastEmergency.ambulance.has_patient ? "Transporting" : "Assigned"}
-              </strong>
-              <span
-                style={{
-                  fontSize: "11px",
-                  padding: "2px 6px",
-                  borderRadius: "4px",
-                  background:
-                    lastEmergency.ambulance.status === "BUSY"
-                      ? "#FF4D5E"
-                      : lastEmergency.ambulance.status === "DISPATCHED"
-                      ? "#FFAA00"
-                      : "#35D48C",
-                  color: "#0A0E14",
-                  fontWeight: "bold",
-                }}
-              >
-                {lastEmergency.ambulance.status}
-              </span>
-            </div>
+            {lastEmergency.ambulance.patient_delivered ? (
+              <div style={{ textAlign: "center", padding: "6px 2px" }}>
+                <div style={{ fontSize: "15px", color: "#34D399", fontWeight: "bold", marginBottom: "6px" }}>
+                  ✅ Patient Safely Delivered!
+                </div>
+                <div style={{ fontSize: "13px", color: "#FFF", marginBottom: "4px" }}>
+                  Admitted to: <strong>{lastEmergency.ambulance.delivered_hospital_name ?? "Hospital"}</strong>
+                </div>
+                <div style={{ fontSize: "11px", color: "#8895A3", marginBottom: "12px" }}>
+                  Ambulance {lastEmergency.ambulance.ambulance_id} completed emergency dropoff.
+                </div>
+                {onClearEmergency && (
+                  <button
+                    type="button"
+                    onClick={onClearEmergency}
+                    style={{
+                      background: "rgba(52, 211, 153, 0.2)",
+                      border: "1px solid #34D399",
+                      color: "#34D399",
+                      borderRadius: "4px",
+                      padding: "4px 14px",
+                      fontSize: "12px",
+                      fontWeight: "bold",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Dismiss
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                  <strong style={{ fontSize: "14px", color: lastEmergency.ambulance.has_patient ? "#FF4D5E" : "#35D48C" }}>
+                    🚑 {lastEmergency.ambulance.ambulance_id} {lastEmergency.ambulance.has_patient ? "Transporting" : "Assigned"}
+                  </strong>
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      padding: "2px 6px",
+                      borderRadius: "4px",
+                      background:
+                        lastEmergency.ambulance.status === "BUSY"
+                          ? "#FF4D5E"
+                          : lastEmergency.ambulance.status === "DISPATCHED"
+                          ? "#FFAA00"
+                          : "#35D48C",
+                      color: "#0A0E14",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {lastEmergency.ambulance.has_patient ? "WITH PATIENT" : lastEmergency.ambulance.status}
+                  </span>
+                </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", fontSize: "12px" }}>
-              <div>
-                <span style={{ color: "#8895A3" }}>ETA:</span>{" "}
-                <strong style={{ color: "#FFF" }}>
-                  {lastEmergency.ambulance.eta_seconds !== null && lastEmergency.ambulance.eta_seconds !== undefined && lastEmergency.ambulance.eta_seconds > 0
-                    ? `${Math.round(lastEmergency.ambulance.eta_seconds)}s (${Math.ceil(lastEmergency.ambulance.eta_seconds / 60)} min)`
-                    : `${Math.round(lastEmergency.travel_time_seconds)}s`}
-                </strong>
-              </div>
-              <div>
-                <span style={{ color: "#8895A3" }}>Destination:</span>{" "}
-                <strong style={{ color: "#FFF" }}>
-                  {lastEmergency.ambulance.destination ? lastEmergency.ambulance.destination.hospital_name : "None"}
-                </strong>
-              </div>
-              <div>
-                <span style={{ color: "#8895A3" }}>Origin Mode:</span>{" "}
-                <span style={{ color: "#FFF" }}>
-                  {lastEmergency.ambulance.is_roaming ? "⚡ Roaming Patrol" : "🅿️ Standby Base"}
-                </span>
-              </div>
-              <div>
-                <span style={{ color: "#8895A3" }}>Patient onboard:</span>{" "}
-                <span style={{ color: lastEmergency.ambulance.has_patient ? "#FF4D5E" : "#35D48C", fontWeight: "bold" }}>
-                  {lastEmergency.ambulance.has_patient ? "Yes" : "No"}
-                </span>
-              </div>
-            </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", fontSize: "12px" }}>
+                  <div>
+                    <span style={{ color: "#8895A3" }}>Live ETA:</span>{" "}
+                    <strong style={{ color: "#34D399" }}>
+                      {formatEta(
+                        lastEmergency.ambulance.eta_seconds ??
+                          lastEmergency.travel_time_seconds
+                      )}
+                    </strong>
+                  </div>
+                  <div>
+                    <span style={{ color: "#8895A3" }}>Remaining Dist:</span>{" "}
+                    <strong style={{ color: "#38BDF8" }}>
+                      {formatDistanceKm(
+                        lastEmergency.ambulance.remaining_distance_meters !== undefined &&
+                        lastEmergency.ambulance.remaining_distance_meters !== null
+                          ? lastEmergency.ambulance.remaining_distance_meters
+                          : 0
+                      )}
+                    </strong>
+                  </div>
+                  <div>
+                    <span style={{ color: "#8895A3" }}>Destination:</span>{" "}
+                    <strong style={{ color: "#FFF" }}>
+                      {lastEmergency.ambulance.destination ? lastEmergency.ambulance.destination.hospital_name : "Patient"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span style={{ color: "#8895A3" }}>Origin Mode:</span>{" "}
+                    <span style={{ color: "#FFF" }}>
+                      {lastEmergency.ambulance.is_roaming ? "⚡ Roaming Patrol" : "🅿️ Standby Base"}
+                    </span>
+                  </div>
+                  <div>
+                    <span style={{ color: "#8895A3" }}>Patient onboard:</span>{" "}
+                    <span style={{ color: lastEmergency.ambulance.has_patient ? "#FF4D5E" : "#35D48C", fontWeight: "bold" }}>
+                      {lastEmergency.ambulance.has_patient ? "Yes" : "No"}
+                    </span>
+                  </div>
+                  <div>
+                    <span style={{ color: "#8895A3" }}>Traffic Feed:</span>{" "}
+                    <span
+                      style={{
+                        color:
+                          lastEmergency.ambulance.traffic_condition === "RED"
+                            ? "#FF4D5E"
+                            : lastEmergency.ambulance.traffic_condition === "YELLOW" ||
+                              lastEmergency.ambulance.traffic_condition === "CONGESTED"
+                            ? "#FFAA00"
+                            : "#35D48C",
+                        fontWeight: "bold",
+                      }}
+                    >
+                      {lastEmergency.ambulance.traffic_source
+                        ? lastEmergency.ambulance.traffic_source === "redis"
+                          ? "Live (Redis)"
+                          : lastEmergency.ambulance.traffic_source
+                        : "Static"}{" "}
+                      {lastEmergency.ambulance.traffic_condition === "RED"
+                        ? "🔴 Heavy"
+                        : lastEmergency.ambulance.traffic_condition === "YELLOW" ||
+                          lastEmergency.ambulance.traffic_condition === "CONGESTED"
+                        ? "🟡 Moderate"
+                        : "🟢 Clear"}
+                    </span>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
       </section>

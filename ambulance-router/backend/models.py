@@ -91,7 +91,13 @@ class AmbulanceState(BaseModel):
     is_roaming: bool = False
     destination: Optional[AmbulanceDestination] = None
     eta_seconds: Optional[float] = None
+    remaining_distance_meters: Optional[float] = None
     route_geometry: List[List[float]] = []
+    traffic_source: Optional[str] = None
+    traffic_condition: Optional[str] = None
+    patient_delivered: bool = False
+    delivered_hospital_name: Optional[str] = None
+
 
 
 class AmbulanceDispatchRequest(BaseModel):
@@ -146,3 +152,20 @@ class FleetSummary(BaseModel):
 
 class SimulationStepRequest(BaseModel):
     seconds: float = 1.0
+
+
+class CongestedSegment(BaseModel):
+    edge_id: str
+    level: str  # "HEAVY" (red) or "MODERATE" (yellow)
+    speed_kmh: float
+    normal_speed_kmh: float
+    congestion_ratio: float
+    geometry: List[List[float]]  # [[lon, lat], ...]
+
+
+class TrafficCongestionResponse(BaseModel):
+    total_congested_segments: int
+    heavy_count: int
+    moderate_count: int
+    source: str
+    segments: List[CongestedSegment]
