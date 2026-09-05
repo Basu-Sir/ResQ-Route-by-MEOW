@@ -46,17 +46,13 @@ export interface HealthResponse {
   graph_edges: number | null;
   redis_connected: boolean;
   hospitals_loaded: number | null;
-<<<<<<< HEAD
   ambulances_loaded?: number | null;
-=======
->>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
 }
 
 export interface LatLng {
   lat: number;
   lng: number;
 }
-<<<<<<< HEAD
 
 export type AmbulanceStatus = "AVAILABLE" | "BUSY" | "DISPATCHED";
 
@@ -107,5 +103,3 @@ export interface FleetSummary {
   dispatched: number;
   with_patient: number;
 }
-=======
->>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad

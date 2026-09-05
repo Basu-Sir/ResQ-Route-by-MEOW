@@ -4,18 +4,25 @@ import { ControlPanel } from "./components/ControlPanel";
 import { HospitalInfoPanel } from "./components/HospitalInfoPanel";
 import { StatusBar } from "./components/StatusBar";
 import { useHospitals } from "./hooks/useHospitals";
+import { useAmbulances } from "./hooks/useAmbulances";
 import { useRoute } from "./hooks/useRoute";
-import { fetchHealth } from "./api/client";
-import type { HealthResponse, HospitalListItem, LatLng } from "./types";
+import { fetchHealth, requestEmergencyAmbulance } from "./api/client";
+import type { EmergencyResponse, HealthResponse, HospitalListItem, LatLng } from "./types";
 
 const DEFAULT_AMBULANCE_POS: LatLng = { lat: 19.076, lng: 72.8777 }; // central Mumbai
+const DEFAULT_PATIENT_POS: LatLng = DEFAULT_AMBULANCE_POS;
 
 export default function App() {
   const [ambulancePos, setAmbulancePos] = useState<LatLng>(DEFAULT_AMBULANCE_POS);
+  const [patientPos, setPatientPos] = useState<LatLng>(DEFAULT_PATIENT_POS);
   const [alphaEmergency, setAlphaEmergency] = useState(1.5);
   const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(null);
+  const [lastEmergency, setLastEmergency] = useState<EmergencyResponse | null>(null);
+  const [emergencyLoading, setEmergencyLoading] = useState(false);
+  const [emergencyError, setEmergencyError] = useState<string | null>(null);
 
   const { hospitals, loading: hospitalsLoading } = useHospitals();
+  const { ambulances: fleetAmbulances, summary, refresh: refreshAmbulances } = useAmbulances();
   const { route, loading: routeLoading, error, dispatch } = useRoute();
 
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -31,7 +38,6 @@ export default function App() {
     if (route) setSelectedHospitalId(route.hospital.id);
   }, [route]);
 
-<<<<<<< HEAD
   // Keep lastEmergency updated if the selected ambulance updates during polling
   useEffect(() => {
     if (!lastEmergency) return;
@@ -64,9 +70,6 @@ export default function App() {
   }
 
   function handleDispatchRoute() {
-=======
-  function handleDispatch() {
->>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
     dispatch({
       latitude: ambulancePos.lat,
       longitude: ambulancePos.lng,
@@ -78,7 +81,6 @@ export default function App() {
     setSelectedHospitalId(hospital.id);
   }
 
-<<<<<<< HEAD
   function handleMapClick(pos: LatLng) {
     setPatientPos(pos);
     setAmbulancePos(pos);
@@ -93,33 +95,21 @@ export default function App() {
         fleetSummary={summary}
         fleetCount={fleetAmbulances.length}
       />
-=======
-  return (
-    <div className="app-shell">
-      <StatusBar health={health} healthError={healthError} hospitalCount={hospitals.length} />
->>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
 
       <div className="app-body">
         <aside className="sidebar">
           <ControlPanel
-<<<<<<< HEAD
             patientPos={patientPos}
             onPatientPosChange={setPatientPos}
-=======
->>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
             ambulancePos={ambulancePos}
             onPositionChange={setAmbulancePos}
             alphaEmergency={alphaEmergency}
             onAlphaChange={setAlphaEmergency}
-<<<<<<< HEAD
             onRequestAmbulance={handleRequestAmbulance}
             requestLoading={emergencyLoading}
             lastEmergency={lastEmergency}
             emergencyError={emergencyError}
             onDispatch={handleDispatchRoute}
-=======
-            onDispatch={handleDispatch}
->>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
             loading={routeLoading}
           />
           <HospitalInfoPanel route={route} error={error} />
@@ -129,27 +119,16 @@ export default function App() {
           {hospitalsLoading && <div className="map-loading-overlay">Loading hospitals…</div>}
           <MapView
             ambulancePos={ambulancePos}
-<<<<<<< HEAD
             patientLocation={lastEmergency ? { lat: lastEmergency.patient_latitude, lng: lastEmergency.patient_longitude } : patientPos}
             onMapClick={handleMapClick}
-=======
-            onMapClick={setAmbulancePos}
->>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
             hospitals={hospitals}
             selectedHospitalId={selectedHospitalId}
             route={route}
             onHospitalClick={handleHospitalClick}
-<<<<<<< HEAD
             fleetAmbulances={fleetAmbulances}
-=======
->>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
           />
         </main>
       </div>
     </div>
   );
 }
-<<<<<<< HEAD
-
-=======
->>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
