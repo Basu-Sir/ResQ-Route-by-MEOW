@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 from backend.graph_loader import edge_ids_to_lonlat_geometry, get_nearest_node
+=======
+from backend.graph_loader import get_nearest_node
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
 
 
 def test_graph_has_expected_nodes(graph_data):
@@ -26,6 +30,7 @@ def test_edge_lookup_maps_node_pairs_to_edge_ids(graph_data):
 def test_get_nearest_node_returns_closest_by_coordinates(graph_data):
     # (9, 1) is closest to node B at (10, 0)
     nearest = get_nearest_node(graph_data, x=9, y=1)
+<<<<<<< HEAD
     assert nearest == "B"
 
 
@@ -37,3 +42,6 @@ def test_edge_ids_to_lonlat_geometry_returns_points(graph_data):
 def test_edge_ids_to_lonlat_geometry_handles_empty_or_unknown(graph_data):
     assert edge_ids_to_lonlat_geometry(graph_data, []) == []
     assert edge_ids_to_lonlat_geometry(graph_data, ["UNKNOWN_EDGE"]) == []
+=======
+    assert nearest == "B"
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad

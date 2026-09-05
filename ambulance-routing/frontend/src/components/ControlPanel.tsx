@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
+<<<<<<< HEAD
 import type { EmergencyResponse, LatLng } from "../types";
+=======
+import type { LatLng } from "../types";
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
 
 interface ControlPanelProps {
   ambulancePos: LatLng;
   onPositionChange: (pos: LatLng) => void;
+<<<<<<< HEAD
   patientPos: LatLng;
   onPatientPosChange: (pos: LatLng) => void;
   alphaEmergency: number;
@@ -12,6 +17,10 @@ interface ControlPanelProps {
   requestLoading: boolean;
   lastEmergency: EmergencyResponse | null;
   emergencyError: string | null;
+=======
+  alphaEmergency: number;
+  onAlphaChange: (alpha: number) => void;
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
   onDispatch: () => void;
   loading: boolean;
 }
@@ -25,6 +34,7 @@ const PRIORITY_PRESETS = [
 export function ControlPanel({
   ambulancePos,
   onPositionChange,
+<<<<<<< HEAD
   patientPos,
   onPatientPosChange,
   alphaEmergency,
@@ -51,11 +61,22 @@ export function ControlPanel({
     setPatLngInput(patientPos.lng.toFixed(6));
   }, [patientPos]);
 
+=======
+  alphaEmergency,
+  onAlphaChange,
+  onDispatch,
+  loading,
+}: ControlPanelProps) {
+  const [latInput, setLatInput] = useState(ambulancePos.lat.toFixed(6));
+  const [lngInput, setLngInput] = useState(ambulancePos.lng.toFixed(6));
+
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
   useEffect(() => {
     setLatInput(ambulancePos.lat.toFixed(6));
     setLngInput(ambulancePos.lng.toFixed(6));
   }, [ambulancePos]);
 
+<<<<<<< HEAD
   function applyPatientCoords() {
     const lat = parseFloat(patLatInput);
     const lng = parseFloat(patLngInput);
@@ -65,6 +86,9 @@ export function ControlPanel({
   }
 
   function applyAmbulanceCoords() {
+=======
+  function applyCoords() {
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
     const lat = parseFloat(latInput);
     const lng = parseFloat(lngInput);
     if (Number.isFinite(lat) && Number.isFinite(lng)) {
@@ -73,6 +97,7 @@ export function ControlPanel({
   }
 
   return (
+<<<<<<< HEAD
     <div className="control-panels-container">
       {/* 1. Emergency Request Panel */}
       <section className="panel" style={{ borderBottom: "2px solid #263140" }}>
@@ -278,3 +303,70 @@ export function ControlPanel({
   );
 }
 
+=======
+    <section className="panel">
+      <h2 className="panel__title">Dispatch</h2>
+
+      <div className="field-group">
+        <label className="field-label" htmlFor="lat-input">
+          Ambulance coordinates
+        </label>
+        <div className="coord-row">
+          <input
+            id="lat-input"
+            className="input input--mono"
+            value={latInput}
+            onChange={(e) => setLatInput(e.target.value)}
+            onBlur={applyCoords}
+            placeholder="Latitude"
+            inputMode="decimal"
+          />
+          <input
+            className="input input--mono"
+            value={lngInput}
+            onChange={(e) => setLngInput(e.target.value)}
+            onBlur={applyCoords}
+            placeholder="Longitude"
+            inputMode="decimal"
+          />
+        </div>
+        <p className="field-hint">Click anywhere on the map to set this instead.</p>
+      </div>
+
+      <div className="field-group">
+        <label className="field-label">Emergency priority</label>
+        <div className="priority-group">
+          {PRIORITY_PRESETS.map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              className={
+                "priority-btn" +
+                (Math.abs(alphaEmergency - preset.value) < 0.01
+                  ? " priority-btn--active"
+                  : "")
+              }
+              onClick={() => onAlphaChange(preset.value)}
+            >
+              <span className="priority-btn__label">{preset.label}</span>
+              <span className="priority-btn__hint">{preset.hint}</span>
+            </button>
+          ))}
+        </div>
+        <div className="alpha-readout">
+          alpha_emergency = <span className="value-mono">{alphaEmergency.toFixed(2)}</span>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        className="dispatch-btn"
+        onClick={onDispatch}
+        disabled={loading}
+      >
+        {loading ? "Calculating route…" : "Calculate best route"}
+      </button>
+    </section>
+  );
+}
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad

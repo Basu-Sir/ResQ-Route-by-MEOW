@@ -9,7 +9,11 @@ import {
 } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
 import L, { type LatLngExpression, type LatLngBoundsExpression } from "leaflet";
+<<<<<<< HEAD
 import type { AmbulanceState, HospitalListItem, LatLng, RouteResponse } from "../types";
+=======
+import type { HospitalListItem, LatLng, RouteResponse } from "../types";
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
 
 import "leaflet/dist/leaflet.css";
 import "leaflet.markercluster/dist/MarkerCluster.css";
@@ -49,6 +53,7 @@ const ambulanceIcon = L.divIcon({
 const hospitalIcon = pinIcon("#4FA8FF");
 const selectedHospitalIcon = pinIcon("#35D48C", 32);
 
+<<<<<<< HEAD
 function getAmbulanceFleetIcon(status: string, hasPatient: boolean, isRoaming?: boolean) {
   const isWithPatient = hasPatient || status === "BUSY";
   const isDispatched = status === "DISPATCHED";
@@ -100,6 +105,8 @@ const patientMarkerIcon = L.divIcon({
   popupAnchor: [0, -17],
 });
 
+=======
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
 interface MapClickHandlerProps {
   onMapClick: (pos: LatLng) => void;
 }
@@ -142,28 +149,44 @@ function FitToRoute({ route, ambulancePos, routeLatLngs }: FitToRouteProps) {
 
 interface MapViewProps {
   ambulancePos: LatLng;
+<<<<<<< HEAD
   patientLocation?: LatLng | null;
+=======
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
   onMapClick: (pos: LatLng) => void;
   hospitals: HospitalListItem[];
   selectedHospitalId: string | null;
   route: RouteResponse | null;
   onHospitalClick: (hospital: HospitalListItem) => void;
+<<<<<<< HEAD
   fleetAmbulances?: AmbulanceState[];
   onAmbulanceClick?: (ambulance: AmbulanceState) => void;
+=======
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
 }
 
 export function MapView({
   ambulancePos,
+<<<<<<< HEAD
   patientLocation,
+=======
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
   onMapClick,
   hospitals,
   selectedHospitalId,
   route,
   onHospitalClick,
+<<<<<<< HEAD
   fleetAmbulances = [],
   onAmbulanceClick,
 }: MapViewProps) {
   // route_geometry is [lon, lat][] (GeoJSON order) — Leaflet wants [lat, lon].
+=======
+}: MapViewProps) {
+  // route_geometry is [lon, lat][] (GeoJSON order) — Leaflet wants [lat, lon].
+  // This is at most a few hundred points (the selected route only), never
+  // the full 196k-edge network.
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
   const routeLatLngs: LatLngExpression[] = useMemo(() => {
     if (!route?.route_geometry?.length) return [];
     return route.route_geometry.map(([lon, lat]) => [lat, lon]);
@@ -209,6 +232,7 @@ export function MapView({
         ))}
       </MarkerClusterGroup>
 
+<<<<<<< HEAD
       {/* Active route polylines for moving fleet ambulances */}
       {fleetAmbulances.map((amb) => {
         if (!amb.route_geometry || amb.route_geometry.length < 2) return null;
@@ -321,6 +345,12 @@ export function MapView({
 
 
       {/* Active dispatch route for user search */}
+=======
+      <Marker position={[ambulancePos.lat, ambulancePos.lng]} icon={ambulanceIcon}>
+        <Popup>Ambulance position</Popup>
+      </Marker>
+
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
       {routeLatLngs.length > 1 && (
         <Polyline
           key={`${route?.hospital.id ?? "route"}-${routeLatLngs.length}-${route?.estimated_travel_time_seconds ?? 0}`}

@@ -277,4 +277,4 @@ def request_emergency_ambulance(req: EmergencyRequest):
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to dispatch emergency ambulance: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Emergency dispatch failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Emergency dispatch failed: {exc}")

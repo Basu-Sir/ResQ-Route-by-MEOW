@@ -1,9 +1,12 @@
 import type {
+<<<<<<< HEAD
   AmbulanceDispatchRequest,
   AmbulanceState,
   EmergencyRequest,
   EmergencyResponse,
   FleetSummary,
+=======
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
   HealthResponse,
   HospitalListItem,
   RouteRequest,
@@ -62,6 +65,7 @@ export function fetchHealth(): Promise<HealthResponse> {
   return request<HealthResponse>("/health");
 }
 
+<<<<<<< HEAD
 /** GET /ambulances — fetches all 30 simulated ambulances. */
 export function fetchAmbulances(): Promise<AmbulanceState[]> {
   return request<AmbulanceState[]>("/ambulances");
@@ -107,3 +111,6 @@ export function resetAmbulances(): Promise<AmbulanceState[]> {
 
 export { ApiError };
 
+=======
+export { ApiError };
+>>>>>>> da3cfbcd28d6553d843ed02f67732fb3b002d2ad
