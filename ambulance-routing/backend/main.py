@@ -5,7 +5,7 @@ FastAPI never talks to TraCI directly. It only reads traffic speeds from
 Redis (with a JSON-fallback and static-SUMO-speed fallback below that).
 """
 import logging
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 
@@ -16,13 +16,20 @@ from backend.graph_loader import (
     load_graph,
     nearest_node_from_latlon,
 )
+from backend.fleet import AmbulanceFleet, AmbulanceHasPatientError
 from backend.hospitals import load_hospitals, filter_available
 from backend.models import (
+    AmbulanceDispatchRequest,
+    AmbulanceState,
+    EmergencyRequest,
+    EmergencyResponse,
+    FleetSummary,
     HealthResponse,
     HospitalListItem,  # NEW
     HospitalOut,
     RouteRequest,
     RouteResponse,
+    SimulationStepRequest,
 )
 from backend.routing import (
     NoAvailableHospitalError,
@@ -38,6 +45,7 @@ app = FastAPI(title="Ambulance Dynamic Routing Service")
 
 app.state.graph_data: GraphData = None
 app.state.hospitals = []
+app.state.fleet: AmbulanceFleet = None
 
 
 @app.on_event("startup")
@@ -53,6 +61,21 @@ def startup_event() -> None:
     logger.info("Loading hospitals from %s", config.HOSPITALS_FILE)
     app.state.hospitals = load_hospitals(config.HOSPITALS_FILE)
     logger.info("Loaded %d hospitals", len(app.state.hospitals))
+
+    logger.info("Initializing ambulance fleet (30 simulated ambulances)...")
+    app.state.fleet = AmbulanceFleet(
+        gd=app.state.graph_data,
+        hospitals=app.state.hospitals,
+        traffic_speeds_fn=get_traffic_speeds,
+    )
+    app.state.fleet.start_background_simulation(interval=1.0)
+    logger.info("Ambulance fleet initialized: %d ambulances", len(app.state.fleet.ambulances))
+
+
+@app.on_event("shutdown")
+def shutdown_event() -> None:
+    if hasattr(app.state, "fleet") and app.state.fleet:
+        app.state.fleet.stop_background_simulation()
 
 
 def get_traffic_speeds():
@@ -164,4 +187,94 @@ def health():
         graph_edges=gd.num_edges if gd is not None else None,
         redis_connected=redis_ok,
         hospitals_loaded=len(app.state.hospitals) if app.state.hospitals else 0,
+        ambulances_loaded=len(app.state.fleet.ambulances) if hasattr(app.state, "fleet") and app.state.fleet else 0,
     )
+
+
+@app.get("/ambulances", response_model=List[AmbulanceState])
+def list_ambulances():
+    if not hasattr(app.state, "fleet") or app.state.fleet is None:
+        raise HTTPException(status_code=503, detail="Ambulance fleet is not initialized")
+    return app.state.fleet.get_all()
+
+
+@app.get("/ambulances/summary", response_model=FleetSummary)
+def get_fleet_summary():
+    """Returns live fleet breakdown: total, roaming, standby, available, dispatched, with_patient."""
+    if not hasattr(app.state, "fleet") or app.state.fleet is None:
+        raise HTTPException(status_code=503, detail="Ambulance fleet is not initialized")
+    return app.state.fleet.get_summary()
+
+
+@app.get("/ambulances/{ambulance_id}", response_model=AmbulanceState)
+def get_ambulance(ambulance_id: str):
+    if not hasattr(app.state, "fleet") or app.state.fleet is None:
+        raise HTTPException(status_code=503, detail="Ambulance fleet is not initialized")
+    amb = app.state.fleet.get_by_id(ambulance_id)
+    if amb is None:
+        raise HTTPException(status_code=404, detail=f"Ambulance '{ambulance_id}' not found")
+    return amb
+
+
+
+@app.post("/ambulances/{ambulance_id}/dispatch", response_model=AmbulanceState)
+def dispatch_ambulance(ambulance_id: str, req: Optional[AmbulanceDispatchRequest] = None):
+    if not hasattr(app.state, "fleet") or app.state.fleet is None:
+        raise HTTPException(status_code=503, detail="Ambulance fleet is not initialized")
+    req = req or AmbulanceDispatchRequest()
+    try:
+        return app.state.fleet.dispatch(
+            ambulance_id=ambulance_id,
+            hospital_id=req.hospital_id,
+            has_patient=req.has_patient,
+            alpha_emergency=req.alpha_emergency,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Ambulance '{ambulance_id}' not found")
+    except AmbulanceHasPatientError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (NoRouteFoundError, NoAvailableHospitalError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to dispatch ambulance %s: %s", ambulance_id, exc)
+        raise HTTPException(status_code=500, detail=f"Dispatch failed: {exc}")
+
+
+@app.post("/ambulances/reset", response_model=List[AmbulanceState])
+def reset_ambulances():
+    if not hasattr(app.state, "fleet") or app.state.fleet is None:
+        raise HTTPException(status_code=503, detail="Ambulance fleet is not initialized")
+    return app.state.fleet.reset()
+
+
+@app.post("/ambulances/step", response_model=List[AmbulanceState])
+def step_simulation(req: Optional[SimulationStepRequest] = None):
+    if not hasattr(app.state, "fleet") or app.state.fleet is None:
+        raise HTTPException(status_code=503, detail="Ambulance fleet is not initialized")
+    seconds = req.seconds if req else 1.0
+    app.state.fleet.step(seconds)
+    return app.state.fleet.get_all()
+
+
+@app.post("/ambulances/request", response_model=EmergencyResponse)
+def request_emergency_ambulance(req: EmergencyRequest):
+    """
+    Emergency request endpoint:
+    1. Considers all available ambulances (both roaming and standby).
+    2. Calculates actual SUMO/rustworkx road travel time to the patient.
+    3. Dispatches the closest/best ambulance to the patient.
+    4. Stops its roaming behavior and starts moving toward patient.
+    """
+    if not hasattr(app.state, "fleet") or app.state.fleet is None:
+        raise HTTPException(status_code=503, detail="Ambulance fleet is not initialized")
+    try:
+        return app.state.fleet.request_ambulance(
+            patient_lat=req.latitude,
+            patient_lon=req.longitude,
+            alpha_emergency=req.alpha_emergency,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to dispatch emergency ambulance: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Emergency dispatch failed: {exc}")

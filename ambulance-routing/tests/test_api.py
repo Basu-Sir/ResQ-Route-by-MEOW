@@ -42,6 +42,7 @@ def test_route_endpoint_happy_path(client):
     assert body["hospital"]["icu_beds"] == 3
     assert body["traffic_source"] == "static"
     assert body["route_edge_ids"] == ["A_B", "B_H"]
+    assert body["route_geometry"] == [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0]]
 
 
 def test_route_endpoint_rejects_invalid_latitude(client):

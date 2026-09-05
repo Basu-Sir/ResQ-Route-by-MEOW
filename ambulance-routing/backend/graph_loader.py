@@ -160,21 +160,30 @@ def edge_ids_to_lonlat_geometry(
     if gd.net is None or not edge_ids:
         return []
 
+    if not hasattr(gd.net, "getEdge"):
+        return []
+
     coords: List[List[float]] = []
     for edge_id in edge_ids:
         try:
             edge = gd.net.getEdge(edge_id)
-        except KeyError:
-            # Edge vanished from the net lookup (shouldn't happen for a
-            # route the graph itself just produced) -- skip rather than
-            # fail the whole request.
+        except Exception:
+            # Edge not found or net lookup issue -- skip rather than fail
             continue
 
-        for x, y in edge.getShape():
-            lon, lat = gd.net.convertXY2LonLat(x, y)
-            point = [round(lon, 6), round(lat, 6)]
-            if coords and coords[-1] == point:
+        shape = getattr(edge, "getShape", lambda: [])()
+        for pt in shape:
+            try:
+                x, y = pt[0], pt[1]
+                if hasattr(gd.net, "convertXY2LonLat"):
+                    lon, lat = gd.net.convertXY2LonLat(x, y)
+                else:
+                    lon, lat = x, y
+                point = [round(float(lon), 6), round(float(lat), 6)]
+                if coords and coords[-1] == point:
+                    continue
+                coords.append(point)
+            except Exception:
                 continue
-            coords.append(point)
 
     return coords

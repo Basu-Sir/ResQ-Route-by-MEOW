@@ -124,3 +124,100 @@ def find_route_to_nearest_hospital(
         distance_meters=distance_meters,
         travel_time_seconds=travel_time_seconds,
     )
+
+
+def find_route_to_target_hospital(
+    gd: GraphData,
+    source_node_id: str,
+    hospital: Hospital,
+    redis_speeds: Dict[str, float],
+    alpha_emergency: float,
+) -> RouteResult:
+    if source_node_id not in gd.node_index:
+        raise NoRouteFoundError(f"Source node '{source_node_id}' not found in graph")
+
+    target_idx = gd.node_index.get(hospital.sumo_node_id)
+    if target_idx is None:
+        raise NoRouteFoundError(f"Hospital node '{hospital.sumo_node_id}' not found in graph")
+
+    source_idx = gd.node_index[source_node_id]
+    weight_fn = build_weight_fn(redis_speeds, alpha_emergency)
+
+    paths = rx.dijkstra_shortest_paths(gd.graph, source_idx, target=target_idx, weight_fn=weight_fn)
+    if target_idx not in paths:
+        raise NoRouteFoundError(f"Hospital '{hospital.name}' is not reachable from source node '{source_node_id}'")
+
+    node_path = list(paths[target_idx])
+    edge_ids: List[str] = []
+    distance_meters = 0.0
+    travel_time_seconds = 0.0
+
+    for u, v in zip(node_path[:-1], node_path[1:]):
+        edge_id = gd.edge_lookup.get((u, v))
+        if edge_id is None:
+            continue
+        edge_static = gd.edge_static[edge_id]
+        live_speed = resolve_edge_speed(edge_id, edge_static.max_speed, redis_speeds)
+        effective_speed = compute_effective_speed(live_speed)
+
+        edge_ids.append(edge_id)
+        distance_meters += edge_static.length
+        travel_time_seconds += edge_static.length / effective_speed
+
+    return RouteResult(
+        hospital=hospital,
+        edge_ids=edge_ids,
+        distance_meters=distance_meters,
+        travel_time_seconds=travel_time_seconds,
+    )
+
+
+@dataclass
+class NodeRouteResult:
+    edge_ids: List[str]
+    distance_meters: float
+    travel_time_seconds: float
+
+
+def find_route_between_nodes(
+    gd: GraphData,
+    source_node_id: str,
+    target_node_id: str,
+    redis_speeds: Dict[str, float],
+    alpha_emergency: float,
+) -> NodeRouteResult:
+    if source_node_id not in gd.node_index:
+        raise NoRouteFoundError(f"Source node '{source_node_id}' not found in graph")
+    if target_node_id not in gd.node_index:
+        raise NoRouteFoundError(f"Target node '{target_node_id}' not found in graph")
+
+    source_idx = gd.node_index[source_node_id]
+    target_idx = gd.node_index[target_node_id]
+
+    weight_fn = build_weight_fn(redis_speeds, alpha_emergency)
+    paths = rx.dijkstra_shortest_paths(gd.graph, source_idx, target=target_idx, weight_fn=weight_fn)
+    if target_idx not in paths:
+        raise NoRouteFoundError(f"Target node '{target_node_id}' is not reachable from source node '{source_node_id}'")
+
+    node_path = list(paths[target_idx])
+    edge_ids: List[str] = []
+    distance_meters = 0.0
+    travel_time_seconds = 0.0
+
+    for u, v in zip(node_path[:-1], node_path[1:]):
+        edge_id = gd.edge_lookup.get((u, v))
+        if edge_id is None:
+            continue
+        edge_static = gd.edge_static[edge_id]
+        live_speed = resolve_edge_speed(edge_id, edge_static.max_speed, redis_speeds)
+        effective_speed = compute_effective_speed(live_speed)
+
+        edge_ids.append(edge_id)
+        distance_meters += edge_static.length
+        travel_time_seconds += edge_static.length / effective_speed
+
+    return NodeRouteResult(
+        edge_ids=edge_ids,
+        distance_meters=distance_meters,
+        travel_time_seconds=travel_time_seconds,
+    )

@@ -72,3 +72,77 @@ class HealthResponse(BaseModel):
     graph_edges: Optional[int] = None
     redis_connected: bool
     hospitals_loaded: Optional[int] = None
+    ambulances_loaded: Optional[int] = None
+
+
+class AmbulanceDestination(BaseModel):
+    hospital_id: str
+    hospital_name: str
+    latitude: float
+    longitude: float
+
+
+class AmbulanceState(BaseModel):
+    ambulance_id: str
+    latitude: float
+    longitude: float
+    status: str  # "AVAILABLE", "BUSY", "DISPATCHED"
+    has_patient: bool
+    is_roaming: bool = False
+    destination: Optional[AmbulanceDestination] = None
+    eta_seconds: Optional[float] = None
+    route_geometry: List[List[float]] = []
+
+
+class AmbulanceDispatchRequest(BaseModel):
+    hospital_id: Optional[str] = None
+    has_patient: bool = False
+    alpha_emergency: float = 1.5
+
+
+class EmergencyRequest(BaseModel):
+    latitude: float = Field(..., description="Emergency latitude")
+    longitude: float = Field(..., description="Emergency longitude")
+    alpha_emergency: float = Field(1.5, description="Emergency priority multiplier, > 0")
+
+    @field_validator("latitude")
+    @classmethod
+    def validate_lat(cls, v: float) -> float:
+        if not (-90.0 <= v <= 90.0):
+            raise ValueError("latitude must be between -90 and 90")
+        return v
+
+    @field_validator("longitude")
+    @classmethod
+    def validate_lon(cls, v: float) -> float:
+        if not (-180.0 <= v <= 180.0):
+            raise ValueError("longitude must be between -180 and 180")
+        return v
+
+    @field_validator("alpha_emergency")
+    @classmethod
+    def validate_alpha(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("alpha_emergency must be greater than 0")
+        return v
+
+
+class EmergencyResponse(BaseModel):
+    ambulance: AmbulanceState
+    travel_time_seconds: float
+    distance_meters: float
+    patient_latitude: float
+    patient_longitude: float
+
+
+class FleetSummary(BaseModel):
+    total: int
+    roaming: int
+    standby: int
+    available: int
+    dispatched: int
+    with_patient: int
+
+
+class SimulationStepRequest(BaseModel):
+    seconds: float = 1.0

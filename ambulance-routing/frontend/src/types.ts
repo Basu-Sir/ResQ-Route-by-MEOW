@@ -46,9 +46,60 @@ export interface HealthResponse {
   graph_edges: number | null;
   redis_connected: boolean;
   hospitals_loaded: number | null;
+  ambulances_loaded?: number | null;
 }
 
 export interface LatLng {
   lat: number;
   lng: number;
+}
+
+export type AmbulanceStatus = "AVAILABLE" | "BUSY" | "DISPATCHED";
+
+export interface AmbulanceDestination {
+  hospital_id: string;
+  hospital_name: string;
+  latitude: number;
+  longitude: number;
+}
+
+export interface AmbulanceState {
+  ambulance_id: string;
+  latitude: number;
+  longitude: number;
+  status: AmbulanceStatus;
+  has_patient: boolean;
+  is_roaming?: boolean;
+  destination: AmbulanceDestination | null;
+  eta_seconds: number | null;
+  route_geometry: RouteGeometry;
+}
+
+export interface AmbulanceDispatchRequest {
+  hospital_id?: string;
+  has_patient?: boolean;
+  alpha_emergency?: number;
+}
+
+export interface EmergencyRequest {
+  latitude: number;
+  longitude: number;
+  alpha_emergency: number;
+}
+
+export interface EmergencyResponse {
+  ambulance: AmbulanceState;
+  travel_time_seconds: number;
+  distance_meters: number;
+  patient_latitude: number;
+  patient_longitude: number;
+}
+
+export interface FleetSummary {
+  total: number;
+  roaming: number;
+  standby: number;
+  available: number;
+  dispatched: number;
+  with_patient: number;
 }

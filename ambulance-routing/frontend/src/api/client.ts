@@ -1,4 +1,9 @@
 import type {
+  AmbulanceDispatchRequest,
+  AmbulanceState,
+  EmergencyRequest,
+  EmergencyResponse,
+  FleetSummary,
   HealthResponse,
   HospitalListItem,
   RouteRequest,
@@ -57,4 +62,48 @@ export function fetchHealth(): Promise<HealthResponse> {
   return request<HealthResponse>("/health");
 }
 
+/** GET /ambulances — fetches all 30 simulated ambulances. */
+export function fetchAmbulances(): Promise<AmbulanceState[]> {
+  return request<AmbulanceState[]>("/ambulances");
+}
+
+/** GET /ambulances/summary — fetches fleet composition & state breakdown. */
+export function fetchFleetSummary(): Promise<FleetSummary> {
+  return request<FleetSummary>("/ambulances/summary");
+}
+
+/** GET /ambulances/:id — fetches a single ambulance. */
+export function fetchAmbulance(id: string): Promise<AmbulanceState> {
+  return request<AmbulanceState>(`/ambulances/${id}`);
+}
+
+/** POST /ambulances/:id/dispatch — dispatches an available ambulance. */
+export function dispatchAmbulance(
+  id: string,
+  payload?: AmbulanceDispatchRequest
+): Promise<AmbulanceState> {
+  return request<AmbulanceState>(`/ambulances/${id}/dispatch`, {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  });
+}
+
+/** POST /ambulances/request — finds and dispatches closest available ambulance to patient. */
+export function requestEmergencyAmbulance(
+  payload: EmergencyRequest
+): Promise<EmergencyResponse> {
+  return request<EmergencyResponse>("/ambulances/request", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** POST /ambulances/reset — resets fleet to initial state. */
+export function resetAmbulances(): Promise<AmbulanceState[]> {
+  return request<AmbulanceState[]>("/ambulances/reset", {
+    method: "POST",
+  });
+}
+
 export { ApiError };
+
