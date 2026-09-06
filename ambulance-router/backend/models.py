@@ -39,6 +39,7 @@ class HospitalOut(BaseModel):
     longitude: float
     sumo_node_id: str
     icu_beds: int
+    emergency_doctors: int
 
 
 # NEW: slim projection of HospitalOut for GET /hospitals. Deliberately
@@ -50,6 +51,7 @@ class HospitalListItem(BaseModel):
     latitude: float
     longitude: float
     icu_beds: int
+    emergency_doctors: int
 
 
 class RouteResponse(BaseModel):
@@ -168,4 +170,4 @@ class TrafficCongestionResponse(BaseModel):
     heavy_count: int
     moderate_count: int
     source: str
-    segments: List[CongestedSegment]
+    segments: List[CongestedSegment]

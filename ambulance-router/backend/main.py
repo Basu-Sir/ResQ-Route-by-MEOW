@@ -163,6 +163,7 @@ def route(req: RouteRequest):
             longitude=h.longitude,
             sumo_node_id=h.sumo_node_id,
             icu_beds=h.icu_beds,
+            emergency_doctors=h.emergency_doctors,
         ),
         route_edge_ids=result.edge_ids,
         distance_meters=round(result.distance_meters, 2),
@@ -186,6 +187,7 @@ def list_hospitals():
             latitude=h.latitude,
             longitude=h.longitude,
             icu_beds=h.icu_beds,
+            emergency_doctors=h.emergency_doctors,
         )
         for h in app.state.hospitals
     ]

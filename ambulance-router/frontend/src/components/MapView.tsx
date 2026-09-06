@@ -504,6 +504,12 @@ export function MapView({
                       {h.icu_beds}
                     </span>
                   </div>
+                  <div className="hospital-popup__row">
+                    <span>Emergency doctors</span>
+                    <span className={h.emergency_doctors > 0 ? "value-ok" : "value-critical"}>
+                      {h.emergency_doctors}
+                    </span>
+                  </div>
                 </div>
               </Popup>
             </Marker>

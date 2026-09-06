@@ -23,7 +23,7 @@ export default function App() {
   const [emergencyLoading, setEmergencyLoading] = useState(false);
   const [emergencyError, setEmergencyError] = useState<string | null>(null);
 
-  const { hospitals, loading: hospitalsLoading } = useHospitals();
+  const { hospitals, loading: hospitalsLoading, refresh: refreshHospitals } = useHospitals();
   const { ambulances: fleetAmbulances, summary, refresh: refreshAmbulances } = useAmbulances();
   const { route, loading: routeLoading, error, dispatch } = useRoute();
   const { congestion, loading: trafficLoading, reseed: reseedTraffic } = useTrafficCongestion();
@@ -51,6 +51,9 @@ export default function App() {
     if (current) {
       if (current.patient_delivered || (lastEmergency.ambulance.has_patient && !current.has_patient)) {
         setPatientActive(false);
+      }
+      if (!lastEmergency.ambulance.patient_delivered && current.patient_delivered) {
+        refreshHospitals();
       }
       if (
         current.latitude !== lastEmergency.ambulance.latitude ||

@@ -7,6 +7,7 @@ export interface HospitalOut {
   longitude: number;
   sumo_node_id: string;
   icu_beds: number;
+  emergency_doctors: number;
 }
 
 // Slim shape returned by GET /hospitals — no sumo_node_id, since the
@@ -17,6 +18,7 @@ export interface HospitalListItem {
   latitude: number;
   longitude: number;
   icu_beds: number;
+  emergency_doctors: number;
 }
 
 export interface RouteRequest {
