@@ -62,6 +62,12 @@ export function HospitalInfoPanel({ route, error }: HospitalInfoPanelProps) {
             </span>
           </div>
           <div className="stat">
+            <span className="stat__label">Emergency doctors</span>
+            <span className={hospital.emergency_doctors > 0 ? "stat__value value-ok" : "stat__value value-critical"}>
+              {hospital.emergency_doctors}
+            </span>
+          </div>
+          <div className="stat">
             <span className="stat__label">Distance</span>
             <span className="stat__value value-mono">{formatDistance(route.distance_meters)}</span>
           </div>

@@ -6,7 +6,8 @@ Manages 30 ambulances across Mumbai road network:
   along real SUMO road geometry, auto-re-routing when reaching destination.
 - 20 STANDBY ambulances: status=AVAILABLE, has_patient=False, stationary until dispatched.
 - Emergency dispatch: selects best available ambulance (roaming or standby)
-  based on shortest road routing travel time/cost to patient.
+    based on the lowest predicted road arrival time to the patient. Geographic
+    distance is not used to rank otherwise routable ambulances.
 - Patient pickup: transitions ambulance to status=BUSY, has_patient=True upon arrival at patient.
 """
 import bisect
@@ -41,6 +42,7 @@ from backend.routing import (
 )
 
 logger = logging.getLogger("fleet")
+CRITICAL_ALPHA = 2.2
 
 
 class AmbulanceHasPatientError(Exception):
@@ -638,7 +640,9 @@ class AmbulanceFleet:
                 amb.cumulative_distances = cum_dists
                 amb.total_distance_m = total_dist
                 amb.current_distance_m = 0.0
-                amb.alpha_emergency = 1.5
+                # Preserve the emergency priority from the patient request so
+                # critical arrivals can consume an ICU bed at dropoff.
+                amb.alpha_emergency = max(1.0, amb.alpha_emergency)
 
                 # Congestion-aware travel time and speed (CLEAR > YELLOW > RED)
                 amb.traffic_source = source_label
@@ -731,6 +735,20 @@ class AmbulanceFleet:
                         elif amb.target_type == "HOSPITAL":
                             # 2. HOSPITAL ARRIVAL: Drop off patient
                             hosp_name = amb.destination.hospital_name if amb.destination else "Hospital"
+                            hospital = next(
+                                (h for h in self.hospitals if amb.destination and h.id == amb.destination.hospital_id),
+                                None,
+                            )
+                            if hospital is not None:
+                                hospital.emergency_doctors = max(0, hospital.emergency_doctors - 1)
+                                if amb.alpha_emergency >= CRITICAL_ALPHA:
+                                    hospital.icu_beds = max(0, hospital.icu_beds - 1)
+                                logger.info(
+                                    "Hospital %s resources after dropoff: ICU=%d, emergency doctors=%d",
+                                    hospital.id,
+                                    hospital.icu_beds,
+                                    hospital.emergency_doctors,
+                                )
                             logger.info(
                                 "Ambulance %s arrived at hospital %s! Patient safely dropped off.",
                                 amb.ambulance_id,
@@ -832,8 +850,10 @@ class AmbulanceFleet:
         """
         Emergency dispatch:
         1. Find all currently AVAILABLE ambulances without patients (both roaming and standby).
-        2. Calculate actual road travel time/cost to patient using SUMO/rustworkx routing.
-        3. Select closest/best ambulance based on shortest travel time.
+          2. Calculate each candidate's road travel time using SUMO/rustworkx and
+              the current Redis/static edge speeds.
+          3. Select the ambulance with the lowest predicted arrival time, even
+              when it is geographically farther away.
         4. Mark selected as DISPATCHED, stop roaming if it was roaming.
         5. Assign route to patient and start moving toward patient.
         """
@@ -849,7 +869,7 @@ class AmbulanceFleet:
             speeds, source_label = self.traffic_speeds_fn()
             patient_node = nearest_node_from_latlon(self.gd, patient_lat, patient_lon)
 
-            # 2. Evaluate road routing cost from each available ambulance to patient
+            # 2. Evaluate predicted road arrival time from every available ambulance.
             best_amb: Optional[Ambulance] = None
             best_result: Optional[NodeRouteResult] = None
             best_travel_time = float("inf")
@@ -942,8 +962,12 @@ class AmbulanceFleet:
 
 
             logger.info(
-                "Dispatched ambulance %s (prev roaming=%s) to patient at (%.4f, %.4f). ETA: %.1fs",
-                best_amb.ambulance_id, best_amb.is_roaming, patient_lat, patient_lon, best_amb.eta_seconds
+                "Dispatched fastest-arrival ambulance %s (predicted road ETA %.1fs, prev roaming=%s) to patient at (%.4f, %.4f)",
+                best_amb.ambulance_id,
+                best_result.travel_time_seconds if best_result else best_amb.eta_seconds,
+                best_amb.is_roaming,
+                patient_lat,
+                patient_lon,
             )
 
             return EmergencyResponse(
@@ -982,6 +1006,10 @@ class AmbulanceFleet:
                         break
                 if target_hospital is None:
                     raise ValueError(f"Hospital '{hospital_id}' not found")
+                if target_hospital.icu_beds <= 0 or target_hospital.emergency_doctors <= 0:
+                    raise NoAvailableHospitalError(
+                        f"Hospital '{target_hospital.name}' has no available ICU beds or emergency doctors"
+                    )
             else:
                 available = filter_available(self.hospitals)
                 if not available:

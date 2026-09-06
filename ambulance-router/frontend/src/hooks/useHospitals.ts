@@ -6,6 +6,7 @@ interface UseHospitalsResult {
   hospitals: HospitalListItem[];
   loading: boolean;
   error: string | null;
+  refresh: () => Promise<void>;
 }
 
 /**
@@ -16,6 +17,18 @@ export function useHospitals(): UseHospitalsResult {
   const [hospitals, setHospitals] = useState<HospitalListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    try {
+      const data = await fetchHospitals();
+      setHospitals(data);
+      setError(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load hospitals");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -36,5 +49,5 @@ export function useHospitals(): UseHospitalsResult {
     };
   }, []);
 
-  return { hospitals, loading, error };
+  return { hospitals, loading, error, refresh };
 }
