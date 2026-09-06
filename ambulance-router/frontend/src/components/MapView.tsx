@@ -212,6 +212,7 @@ function FitToRoute({ route, ambulancePos, routeLatLngs }: FitToRouteProps) {
 interface MapViewProps {
   ambulancePos: LatLng;
   patientLocation?: LatLng | null;
+  patientAmbulanceId?: string | null;
   onMapClick: (pos: LatLng) => void;
   hospitals: HospitalListItem[];
   selectedHospitalId: string | null;
@@ -227,6 +228,7 @@ interface MapViewProps {
 export function MapView({
   ambulancePos,
   patientLocation,
+  patientAmbulanceId,
   onMapClick,
   hospitals,
   selectedHospitalId,
@@ -239,6 +241,302 @@ export function MapView({
   isTrafficLoading = false,
 }: MapViewProps) {
   const [showTraffic, setShowTraffic] = useState(true);
+  const [animatedPositions, setAnimatedPositions] = useState<Record<string, LatLng>>({});
+  const animationFrameRef = useRef<number | null>(null);
+  const animationStatesRef = useRef<Record<string, {
+    /** Polyline path [lat, lng][] the ambulance should follow this tick */
+    path: LatLng[];
+    /** Cumulative distances along `path` (same length) */
+    pathCumDist: number[];
+    /** Total length of `path` in meters */
+    pathTotalDist: number;
+    /** performance.now() when the travel animation started */
+    startedAt: number;
+    /** Duration (ms) over which to traverse the full path segment */
+    durationMs: number;
+    /** If > 0, hold at holdPosition until this timestamp before moving */
+    holdUntil: number;
+    /** Position to display while holding */
+    holdPosition?: LatLng;
+  }>>({});
+  const previousFleetRef = useRef<Record<string, AmbulanceState>>({});
+
+  // ── helpers ────────────────────────────────────────────────────────────
+  /** Haversine distance in meters between two lat/lng points. */
+  const haversineM = (a: LatLng, b: LatLng): number => {
+    const R = 6_371_000;
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const sinHalf = Math.sin(dLat / 2);
+    const sinHalfLng = Math.sin(dLng / 2);
+    const h =
+      sinHalf * sinHalf +
+      Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * sinHalfLng * sinHalfLng;
+    return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  };
+
+  /** Build cumulative-distance array for a polyline. */
+  const buildCumDist = (pts: LatLng[]): { cumDist: number[]; total: number } => {
+    const cumDist = [0];
+    for (let i = 1; i < pts.length; i++) {
+      cumDist.push(cumDist[i - 1] + haversineM(pts[i - 1], pts[i]));
+    }
+    return { cumDist, total: cumDist[cumDist.length - 1] };
+  };
+
+  /** Interpolate position at `dist` meters along a polyline. */
+  const interpolateAlongPath = (
+    pts: LatLng[],
+    cumDist: number[],
+    dist: number,
+  ): LatLng => {
+    if (pts.length === 0) return { lat: 0, lng: 0 };
+    if (dist <= 0 || pts.length === 1) return pts[0];
+    if (dist >= cumDist[cumDist.length - 1]) return pts[pts.length - 1];
+    // Binary-search for the segment
+    let lo = 0;
+    let hi = cumDist.length - 1;
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (cumDist[mid] <= dist) lo = mid;
+      else hi = mid;
+    }
+    const segLen = cumDist[hi] - cumDist[lo];
+    const frac = segLen > 1e-9 ? (dist - cumDist[lo]) / segLen : 0;
+    return {
+      lat: pts[lo].lat + (pts[hi].lat - pts[lo].lat) * frac,
+      lng: pts[lo].lng + (pts[hi].lng - pts[lo].lng) * frac,
+    };
+  };
+
+  /**
+   * Build the path segment an ambulance should travel THIS tick.
+   * We take the ambulance's route_geometry (remaining route from backend,
+   * in GeoJSON [lon, lat] order) and prepend the current display position
+   * so the ambulance smoothly moves from where it appears now toward
+   * the backend-reported position along the road.
+   */
+  const buildPathForAmbulance = (
+    currentDisplayPos: LatLng,
+    ambulance: AmbulanceState,
+  ): LatLng[] => {
+    const backendPos: LatLng = { lat: ambulance.latitude, lng: ambulance.longitude };
+
+    // Route geometry is [lon, lat][] — convert to LatLng[]
+    const routeLatLngs: LatLng[] =
+      ambulance.route_geometry?.map(([lon, lat]) => ({ lat, lng: lon })) ?? [];
+
+    if (routeLatLngs.length < 2) {
+      // No route — fall back to straight-line interpolation
+      return [currentDisplayPos, backendPos];
+    }
+
+    // Find the point on the route polyline closest to the current display position
+    // and the point closest to the backend-reported position, then extract the
+    // sub-path between them.
+    const projectOnRoute = (target: LatLng): { idx: number; frac: number; dist: number } => {
+      let bestDist = Infinity;
+      let bestIdx = 0;
+      let bestFrac = 0;
+      for (let i = 0; i < routeLatLngs.length - 1; i++) {
+        const a = routeLatLngs[i];
+        const b = routeLatLngs[i + 1];
+        // Project target onto segment a→b
+        const dx = b.lng - a.lng;
+        const dy = b.lat - a.lat;
+        const lenSq = dx * dx + dy * dy;
+        let t = 0;
+        if (lenSq > 1e-14) {
+          t = Math.max(0, Math.min(1, ((target.lng - a.lng) * dx + (target.lat - a.lat) * dy) / lenSq));
+        }
+        const projLat = a.lat + t * dy;
+        const projLng = a.lng + t * dx;
+        const d = haversineM(target, { lat: projLat, lng: projLng });
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+          bestFrac = t;
+          // Early exit for near-exact matches
+          if (d < 0.5) break;
+        }
+      }
+      return { idx: bestIdx, frac: bestFrac, dist: bestDist };
+    };
+
+    const fromProj = projectOnRoute(currentDisplayPos);
+    const toProj = projectOnRoute(backendPos);
+
+    // Build sub-path from fromProj → toProj along the polyline
+    const subPath: LatLng[] = [];
+
+    // Start from projected position on the polyline (or currentDisplayPos if off-route)
+    if (fromProj.dist > 500) {
+      // If we're very far from the route, just straight-line to backend pos
+      return [currentDisplayPos, backendPos];
+    }
+
+    // Starting interpolated point on the route
+    const startPt: LatLng = {
+      lat: routeLatLngs[fromProj.idx].lat + fromProj.frac * (routeLatLngs[fromProj.idx + 1].lat - routeLatLngs[fromProj.idx].lat),
+      lng: routeLatLngs[fromProj.idx].lng + fromProj.frac * (routeLatLngs[fromProj.idx + 1].lng - routeLatLngs[fromProj.idx].lng),
+    };
+    subPath.push(startPt);
+
+    // Determine which direction along the route we're going
+    // (from segment → to segment should be in route order, i.e. toIdx >= fromIdx)
+    const fromSeg = fromProj.idx;
+    const toSeg = toProj.idx;
+
+    if (toSeg > fromSeg || (toSeg === fromSeg && toProj.frac > fromProj.frac)) {
+      // Normal forward movement along route
+      // Add intermediate polyline vertices between fromSeg+1 .. toSeg
+      for (let i = fromProj.idx + 1; i <= toProj.idx; i++) {
+        subPath.push(routeLatLngs[i]);
+      }
+    } else {
+      // Backend position is behind or same as current — just go straight
+      subPath.length = 0;
+      subPath.push(currentDisplayPos);
+    }
+
+    // End interpolated point on the route
+    const endPt: LatLng = {
+      lat: routeLatLngs[toProj.idx].lat + toProj.frac * (routeLatLngs[toProj.idx + 1].lat - routeLatLngs[toProj.idx].lat),
+      lng: routeLatLngs[toProj.idx].lng + toProj.frac * (routeLatLngs[toProj.idx + 1].lng - routeLatLngs[toProj.idx].lng),
+    };
+    subPath.push(endPt);
+
+    // Deduplicate consecutive identical points
+    const cleaned: LatLng[] = [subPath[0]];
+    for (let i = 1; i < subPath.length; i++) {
+      if (
+        Math.abs(subPath[i].lat - cleaned[cleaned.length - 1].lat) > 1e-9 ||
+        Math.abs(subPath[i].lng - cleaned[cleaned.length - 1].lng) > 1e-9
+      ) {
+        cleaned.push(subPath[i]);
+      }
+    }
+
+    return cleaned.length >= 2 ? cleaned : [currentDisplayPos, backendPos];
+  };
+
+  // ── Main animation effect ──────────────────────────────────────────────
+  // Smooth the coarse backend snapshots for display only. Routing, movement,
+  // status transitions, and server-side timing remain unchanged.
+  useEffect(() => {
+    const now = performance.now();
+    const nextPositions: Record<string, LatLng> = { ...animatedPositions };
+    const nextPrevious: Record<string, AmbulanceState> = {};
+
+    for (const ambulance of fleetAmbulances) {
+      const id = ambulance.ambulance_id;
+      const target = { lat: ambulance.latitude, lng: ambulance.longitude };
+      const current = nextPositions[id] ?? target;
+      const previous = previousFleetRef.current[id];
+      const pickedUp = previous && !previous.has_patient && ambulance.has_patient;
+
+      if (pickedUp) {
+        // Patient pickup — hold at patient location for 2 seconds
+        nextPositions[id] = target;
+        animationStatesRef.current[id] = {
+          path: [target],
+          pathCumDist: [0],
+          pathTotalDist: 0,
+          startedAt: now + 2000,
+          durationMs: 0,
+          holdUntil: now + 2000,
+          holdPosition: target,
+        };
+      } else if (
+        Math.abs(current.lat - target.lat) > 1e-8 ||
+        Math.abs(current.lng - target.lng) > 1e-8
+      ) {
+        const existing = animationStatesRef.current[id];
+        const isHolding = existing && existing.holdUntil > now;
+
+        const animFrom = isHolding ? (existing.holdPosition ?? current) : current;
+        const path = buildPathForAmbulance(animFrom, ambulance);
+        const { cumDist, total } = buildCumDist(path);
+
+        animationStatesRef.current[id] = {
+          path,
+          pathCumDist: cumDist,
+          pathTotalDist: total,
+          startedAt: isHolding ? existing.holdUntil : now,
+          durationMs: 1400,
+          holdUntil: isHolding ? existing.holdUntil : 0,
+          holdPosition: isHolding ? (existing.holdPosition ?? current) : undefined,
+        };
+      }
+
+      nextPrevious[id] = ambulance;
+    }
+
+    previousFleetRef.current = nextPrevious;
+    setAnimatedPositions(nextPositions);
+
+    if (animationFrameRef.current === null) {
+      const animate = (timestamp: number) => {
+        let active = false;
+        const framePositions: Record<string, LatLng> = { ...nextPositions };
+
+        for (const [id, state] of Object.entries(animationStatesRef.current)) {
+          if (timestamp < state.holdUntil) {
+            framePositions[id] = state.holdPosition ?? state.path[0];
+            active = true;
+            continue;
+          }
+
+          if (state.pathTotalDist < 1e-6 || state.durationMs <= 0) {
+            // No distance to travel — snap to final position
+            framePositions[id] = state.path[state.path.length - 1];
+            continue;
+          }
+
+          const rawProgress = Math.min(1, (timestamp - state.startedAt) / state.durationMs);
+          // Ease-in-out quad for smooth acceleration / deceleration
+          const eased =
+            rawProgress < 0.5
+              ? 2 * rawProgress * rawProgress
+              : 1 - Math.pow(-2 * rawProgress + 2, 2) / 2;
+
+          const distAlong = eased * state.pathTotalDist;
+          framePositions[id] = interpolateAlongPath(
+            state.path,
+            state.pathCumDist,
+            distAlong,
+          );
+
+          if (rawProgress < 1) active = true;
+        }
+
+        setAnimatedPositions(framePositions);
+        animationFrameRef.current = active ? requestAnimationFrame(animate) : null;
+      };
+      animationFrameRef.current = requestAnimationFrame(animate);
+    }
+
+    return () => {
+      if (animationFrameRef.current !== null) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+    };
+    // Snapshot updates intentionally restart the display interpolation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fleetAmbulances]);
+
+  const animatedFleetAmbulances = fleetAmbulances.map((ambulance) => {
+    const position = animatedPositions[ambulance.ambulance_id];
+    return position ? { ...ambulance, latitude: position.lat, longitude: position.lng } : ambulance;
+  });
+  const attachedAmbulance = patientAmbulanceId
+    ? animatedFleetAmbulances.find((ambulance) => ambulance.ambulance_id === patientAmbulanceId)
+    : undefined;
+  const renderedPatientLocation = attachedAmbulance?.has_patient
+    ? { lat: attachedAmbulance.latitude, lng: attachedAmbulance.longitude }
+    : patientLocation;
 
   // route_geometry is [lon, lat][] (GeoJSON order) — Leaflet wants [lat, lon].
   const routeLatLngs: LatLngExpression[] = useMemo(() => {
@@ -246,7 +544,7 @@ export function MapView({
     return route.route_geometry.map(([lon, lat]) => [lat, lon]);
   }, [route]);
 
-  const congestedAmbsCount = fleetAmbulances.filter(
+  const congestedAmbsCount = animatedFleetAmbulances.filter(
     (a) => a.traffic_condition === "CONGESTED"
   ).length;
 
@@ -517,7 +815,7 @@ export function MapView({
         </MarkerClusterGroup>
 
         {/* Active route polylines for moving fleet ambulances */}
-        {fleetAmbulances.map((amb) => {
+        {animatedFleetAmbulances.map((amb) => {
           if (!amb.route_geometry || amb.route_geometry.length < 2) return null;
           const pts: LatLngExpression[] = amb.route_geometry.map(([lon, lat]) => [lat, lon]);
           const isWithPatient = amb.has_patient || amb.status === "BUSY";
@@ -541,7 +839,7 @@ export function MapView({
         })}
 
         {/* 30 simulated fleet ambulances */}
-        {fleetAmbulances.map((amb) => (
+        {animatedFleetAmbulances.map((amb) => (
           <Marker
             key={amb.ambulance_id}
             position={[amb.latitude, amb.longitude]}
@@ -694,8 +992,8 @@ export function MapView({
         ))}
 
         {/* Emergency patient location marker */}
-        {patientLocation && (
-          <Marker position={[patientLocation.lat, patientLocation.lng]} icon={patientMarkerIcon}>
+        {renderedPatientLocation && (
+          <Marker position={[renderedPatientLocation.lat, renderedPatientLocation.lng]} icon={patientMarkerIcon}>
             <Popup>
               <div style={{ minWidth: "160px" }}>
                 <strong style={{ color: "#FF4D5E", fontSize: "13px" }}>
@@ -704,11 +1002,11 @@ export function MapView({
                 <div style={{ fontSize: "12px", marginTop: "4px" }}>
                   <div>
                     Latitude:{" "}
-                    <span className="value-mono">{patientLocation.lat.toFixed(5)}</span>
+                    <span className="value-mono">{renderedPatientLocation.lat.toFixed(5)}</span>
                   </div>
                   <div>
                     Longitude:{" "}
-                    <span className="value-mono">{patientLocation.lng.toFixed(5)}</span>
+                    <span className="value-mono">{renderedPatientLocation.lng.toFixed(5)}</span>
                   </div>
                 </div>
               </div>
