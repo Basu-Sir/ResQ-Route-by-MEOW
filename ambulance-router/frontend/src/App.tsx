@@ -159,6 +159,7 @@ export default function App() {
           {hospitalsLoading && <div className="map-loading-overlay">Loading hospitals…</div>}
           <MapView
             ambulancePos={ambulancePos}
+            patientAmbulanceId={lastEmergency?.ambulance.ambulance_id}
             patientLocation={
               patientActive && !lastEmergency?.ambulance.patient_delivered
                 ? lastEmergency?.ambulance.has_patient
